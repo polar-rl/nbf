@@ -1,0 +1,44 @@
+# k=1 smoke / integration config.
+# Tiny everything: a model trained for ~200 iterations on ~40 episodes of data,
+# evaluated on 4 episodes with small particle filters. The end-to-end pipeline
+# should finish in a few minutes on CPU. Used by scripts/smoke_k1.sh.
+model:
+  input_dim: 2
+  output_dim: 2
+  embedding:
+    block_type: set_transformer
+    embedding_dim: 32
+    hidden_size: 64
+    num_rounds: 2
+    num_heads: 4
+    num_inducing: 8
+  generator:
+    flow_type: fm
+    conditioning: concat
+    fm_hidden_size: 64
+    fm_num_layers: 2
+    fm_time_embed_dim: 8
+    fm_num_steps: 20
+    fm_sigma_min: 1e-4
+
+training:
+  num_iterations: 200
+  learning_rate: 1.0e-3
+  end_learning_rate: 1.0e-4
+  warmup_steps: 10
+  batch_size: 16
+  num_samples: 64
+  log_interval: 50
+  checkpoint_interval: 0
+  clip_grad_norm: 1.0
+  seed: 0
+
+data:
+  num_evaders: 1
+  num_episodes_per_policy: 2
+  episode_length: 5
+  num_policies: 20
+  num_pf_particles: 1000
+
+data_path: data/pursuit_evasion/smoke/
+save_path: results/pursuit_evasion/smoke/k1/nbf/
