@@ -8,10 +8,15 @@ import numpy as np
 from jax import Array
 from tqdm import tqdm
 
-from nbf.filters.particle import ParticleSet
-from nbf.domains.pursuit_evasion.config import Config, DataConfig, load_config, resolve_runtime_paths
+from nbf.domains.pursuit_evasion.config import (
+    Config,
+    DataConfig,
+    load_config,
+    resolve_runtime_paths,
+)
 from nbf.domains.pursuit_evasion.env import PursuitEvasionEnv
 from nbf.domains.pursuit_evasion.policies import sample_training_policies
+from nbf.filters.particle import ParticleSet
 
 
 def data_dirname(num_evaders: int) -> str:

@@ -4,14 +4,11 @@ import os
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jax import Array
-
 from embedex.distributions.builder import create_model
 from embedex.distributions.config import ModelConfig
+from jax import Array
 
 from nbf.config import build_dataclass
-from nbf.filters.gmf import GMF
-
 from nbf.domains.pursuit_evasion.env import (
     SENSOR_POS,
     SIGMA_DYN,
@@ -20,6 +17,7 @@ from nbf.domains.pursuit_evasion.env import (
     PursuitEvasionEnv,
     propagate_deterministic,
 )
+from nbf.filters.gmf import GMF
 
 
 def make_pe_gmf(
@@ -101,9 +99,11 @@ def load_embedding_model(model_dir, key):
     model_cfg = build_dataclass(ModelConfig, mcfg)
     model = create_model(model_cfg, dequantize=False, key=key)
     model = jax.tree.map(
-        lambda x: x.astype(jnp.float32)
-        if eqx.is_array(x) and jnp.issubdtype(x.dtype, jnp.floating)
-        else x,
+        lambda x: (
+            x.astype(jnp.float32)
+            if eqx.is_array(x) and jnp.issubdtype(x.dtype, jnp.floating)
+            else x
+        ),
         model,
     )
     with open(model_path, 'rb') as f:

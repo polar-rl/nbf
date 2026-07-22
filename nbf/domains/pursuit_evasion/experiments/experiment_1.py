@@ -5,8 +5,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 
-from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.particle import ParticleFilter
 from nbf.domains.pursuit_evasion.env import L, normalize_positions
 from nbf.domains.pursuit_evasion.eval.base import (
     env_rollout_batch,
@@ -18,6 +16,8 @@ from nbf.domains.pursuit_evasion.eval.base import (
 )
 from nbf.domains.pursuit_evasion.policies import make_goal_policy
 from nbf.domains.pursuit_evasion.visualize import plot_e1_heatmaps
+from nbf.filters.nbf import NeuralBayesianFilter
+from nbf.filters.particle import ParticleFilter
 
 DEFAULT_METHODS = ('pf_oracle', 'gmf_4', 'gmf_16', 'gmf_64', 'pf_256', 'nbf_256')
 DEFAULT_TIMESTEPS = (1, 5, 10, 15, 20)

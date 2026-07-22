@@ -116,7 +116,7 @@ def plot_e1_heatmaps(
 
 
 def _particle_intensity(p: int) -> float:
-    lo, hi = 7.0, 15.0 
+    lo, hi = 7.0, 15.0
     t = (np.log2(max(p, 1)) - lo) / (hi - lo)
     t = float(np.clip(t, 0.0, 1.0))
     return 0.4 + 0.6 * t

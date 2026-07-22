@@ -5,9 +5,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.particle import ParticleFilter, resolve_pf_bandwidths
-
 from nbf.domains.pursuit_evasion.env import PursuitEvasionEnv
 from nbf.domains.pursuit_evasion.eval.base import (
     make_pe_gmf,
@@ -27,6 +24,8 @@ from nbf.domains.pursuit_evasion.eval.samples import (
     pf_reference_sample_stream_batch,
     pf_samples_density_stream_batch,
 )
+from nbf.filters.nbf import NeuralBayesianFilter
+from nbf.filters.particle import ParticleFilter, resolve_pf_bandwidths
 
 ORACLE_PF_COUNT = int(os.environ.get('NBF_ORACLE_PF_COUNT', 100_000))
 GOLD_SMC_COUNT = int(os.environ.get('NBF_GOLD_SMC_COUNT', 100_000))
@@ -351,4 +350,3 @@ def compute_method_samples_and_density(
 
     m = density_metrics_from_logps(lp_pos, lp_neg)
     return samples, {name: m[name] for name in DENSITY_METRIC_NAMES}
-

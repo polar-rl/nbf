@@ -8,6 +8,7 @@ import jax
 
 S = TypeVar('S', bound='State')
 
+
 class Observation(eqx.Module):
     pass
 

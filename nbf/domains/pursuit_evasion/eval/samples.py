@@ -3,16 +3,15 @@ import jax
 import jax.numpy as jnp
 from jax import Array
 
-from nbf.filters.gmf import GMF
-from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.particle import ParticleFilter, ParticleSet
-
 from nbf.domains.pursuit_evasion.env import (
     SENSOR_POS,
     PursuitEvasionEnv,
     clip_to_valid,
     normalize_positions,
 )
+from nbf.filters.gmf import GMF
+from nbf.filters.nbf import NeuralBayesianFilter
+from nbf.filters.particle import ParticleFilter, ParticleSet
 
 
 @eqx.filter_jit

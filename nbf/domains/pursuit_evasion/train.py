@@ -7,6 +7,8 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
+from embedex.distributions.builder import count_parameters, create_model
+from embedex.distributions.training import train as _train
 from jax import Array
 
 from nbf.domains.pursuit_evasion.config import parse_args
@@ -16,8 +18,6 @@ from nbf.domains.pursuit_evasion.generate_data import (
     generate_data,
     load_data,
 )
-from embedex.distributions.builder import count_parameters, create_model
-from embedex.distributions.training import train as _train
 
 
 def _plot_loss_curve(losses, *, log_interval, smoothing_window=16):

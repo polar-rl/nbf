@@ -5,10 +5,9 @@ import jax
 import numpy as np
 from jax import Array
 
-from nbf.filters.nbf import NeuralBayesianFilter
-
 from nbf.domains.pursuit_evasion.eval.base import parse_method_spec, split_T
 from nbf.domains.pursuit_evasion.eval.dispatch import compute_method_samples
+from nbf.filters.nbf import NeuralBayesianFilter
 
 
 @eqx.filter_jit
@@ -32,9 +31,7 @@ def _nbf_filter_collect_embeddings_stream_batch(
             embedding, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
             return embedding, embedding
 
-        _, embs = jax.lax.scan(
-            _step, embedding, (step_keys, states_next, obs_prev, obs_next)
-        )
+        _, embs = jax.lax.scan(_step, embedding, (step_keys, states_next, obs_prev, obs_next))
         return embs
 
     return jax.vmap(_one)(

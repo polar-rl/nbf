@@ -1,9 +1,8 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-from jumanji.env import Environment
-
 from embedex.distributions.embedding import FlowEmbedding
+from jumanji.env import Environment
 
 from nbf.base_types import Observation, State
 from nbf.filters.particle import ParticleSet

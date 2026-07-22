@@ -3,7 +3,6 @@ import os
 from dataclasses import dataclass, field
 
 import yaml
-
 from embedex.distributions.config import ModelConfig
 
 from nbf.config import TrainingConfig as _BaseTrainingConfig
