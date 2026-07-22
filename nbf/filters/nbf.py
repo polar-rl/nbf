@@ -86,6 +86,7 @@ class NeuralBayesianFilter(eqx.Module):
             lambda: particle_set,
         )
         features = jax.vmap(lambda p: p.to_flat_features())(particle_set.particles)
+
         return self.model.embed(features, particle_set.weights)[0], neff
 
     @eqx.filter_jit
@@ -122,14 +123,17 @@ class NeuralBayesianFilter(eqx.Module):
     def reset(
         self, env: Environment, state: State, observation: Observation, key: jax.Array
     ) -> jax.Array:
-        reset_key, sample_key = jax.random.split(key, 2)
         n = self.num_particles
-        particles, timesteps = jax.vmap(env.reset)(jax.random.split(reset_key, n))
+
+        reset_key, sample_key = jax.random.split(key, 2)
+        particles, _ = jax.vmap(env.reset)(jax.random.split(reset_key, n))
 
         features = jax.vmap(lambda p: p.to_flat_features())(particles)
         particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
-        weights = env.observation_weights(particles, timesteps.observation, observation)
+        observations = jax.vmap(lambda p: p.observation_from_state())(particles)
+        weights = env.observation_weights(particles, observations, observation)
 
         probs = weights / jnp.sum(weights)
         idx = jax.random.choice(sample_key, n, (n,), p=probs)
+
         return self.model.embed(features[idx], jnp.ones(n))[0]

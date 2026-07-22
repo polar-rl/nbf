@@ -19,14 +19,17 @@ class ParticleSet(eqx.Module):
         particles, timesteps = jax.vmap(env.step, in_axes=(0, None, 0))(
             self.particles, action, sim_keys
         )
+
         obs_weights = env.observation_weights(particles, timesteps.observation, observation)
         new_weights = self.weights * obs_weights
+
         weight_sum = jnp.sum(new_weights)
         weights = jax.lax.cond(
             weight_sum > 0.0,
             lambda: new_weights / weight_sum,
             lambda: obs_weights,
         )
+
         return ParticleSet(particles, weights)
 
     @eqx.filter_jit
@@ -168,10 +171,11 @@ class ParticleFilter(eqx.Module):
     def reset(
         self, env: Environment, state: State, observation: Observation, key: jax.Array
     ) -> ParticleSet:
-        particles, timesteps = jax.vmap(env.reset)(jax.random.split(key, self.num_particles))
+        particles, _ = jax.vmap(env.reset)(jax.random.split(key, self.num_particles))
 
         features = jax.vmap(lambda p: p.to_flat_features())(particles)
         particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
-        weights = env.observation_weights(particles, timesteps.observation, observation)
+        observations = jax.vmap(lambda p: p.observation_from_state())(particles)
+        weights = env.observation_weights(particles, observations, observation)
 
         return ParticleSet(particles, weights)
