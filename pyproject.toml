@@ -59,3 +59,7 @@ ignore = [
     'E501',  # line too long
     'E731',  # do not assign a lambda expression
 ]
+[tool.uv]
+environments = [
+    "sys_platform == 'linux' and platform_machine == 'x86_64'",
+]
