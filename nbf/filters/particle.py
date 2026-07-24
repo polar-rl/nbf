@@ -171,10 +171,13 @@ class ParticleFilter(eqx.Module):
     def reset(
         self, env: Environment, state: State, observation: Observation, key: jax.Array
     ) -> ParticleSet:
-        particles, _ = jax.vmap(env.reset)(jax.random.split(key, self.num_particles))
-
-        features = jax.vmap(lambda p: p.to_flat_features())(particles)
-        particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
+        keys = jax.random.split(key, self.num_particles)
+        if getattr(env, 'has_prior_sampler', False):
+            particles = jax.vmap(lambda k: env.sample_prior(state, k))(keys)
+        else:
+            particles, _ = jax.vmap(env.reset)(keys)
+            features = jax.vmap(lambda p: p.to_flat_features())(particles)
+            particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
         observations = jax.vmap(lambda p: p.observation_from_state())(particles)
         weights = env.observation_weights(particles, observations, observation)
 
