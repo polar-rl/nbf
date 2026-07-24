@@ -3,15 +3,12 @@ import os
 import jax
 import numpy as np
 
-from nbf.domains.pursuit_evasion.eval.base import (
-    make_env_kn,
-    parse_csv_methods,
-    rollout_episodes,
-)
-from nbf.domains.pursuit_evasion.eval.dispatch import NUM_REF_SAMPLES
+from nbf.domains.pursuit_evasion.eval.base import make_env_kn
 from nbf.domains.pursuit_evasion.eval.timing import time_method_walltime
-from nbf.domains.pursuit_evasion.experiments._tex import fmt_or_dash, latex_escape
 from nbf.domains.pursuit_evasion.policies import make_random_walk_policy
+from nbf.eval._tex import fmt_or_dash, latex_escape
+from nbf.eval.base import parse_csv_methods, rollout_episodes
+from nbf.eval.dispatch import NUM_REF_SAMPLES
 
 DEFAULT_METHODS = (
     'nbf_128',

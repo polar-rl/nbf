@@ -4,23 +4,19 @@ import jax
 import matplotlib.pyplot as plt
 import numpy as np
 
-from nbf.domains.pursuit_evasion.eval.base import (
-    make_env_kn,
-    parse_csv_methods,
-    rollout_episodes,
-)
+from nbf.domains.pursuit_evasion.eval.base import make_env_kn
 from nbf.domains.pursuit_evasion.eval.dispatch import (
-    NUM_NEGATIVES,
-    NUM_REF_SAMPLES,
     compute_method_samples_and_density,
     prepare_oracle_and_negatives,
 )
-from nbf.domains.pursuit_evasion.eval.metrics import mmd2_per_step_batch
-from nbf.domains.pursuit_evasion.experiments._tex import latex_escape
 from nbf.domains.pursuit_evasion.policies import (
     sample_ood_component_policy,
     sample_train_mixture_policy,
 )
+from nbf.eval._tex import latex_escape
+from nbf.eval.base import parse_csv_methods, rollout_episodes
+from nbf.eval.dispatch import NUM_NEGATIVES, NUM_REF_SAMPLES
+from nbf.eval.metrics import mmd2_per_step_batch
 
 DEFAULT_METHODS = ('nbf_1024', 'pf_8192')
 REGIMES = ('in_dist', 'ood_wall', 'ood_orbit', 'ood_sharp_goal', 'ood_diffuse_goal')

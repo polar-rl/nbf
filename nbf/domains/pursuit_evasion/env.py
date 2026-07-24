@@ -303,6 +303,31 @@ class PursuitEvasionEnv(eqx.Module):
             lambda: jnp.ones(n) / n,
         )
 
+    def state_array(self, state) -> jax.Array:
+        return state.positions
+
+    def replace_state_array(self, state, array: jax.Array):
+        return eqx.tree_at(lambda s: s.positions, state, array)
+
+    def normalize_flat(self, array: jax.Array) -> jax.Array:
+        return normalize_positions(array).reshape(array.shape[0], -1)
+
+    def observation_log_prob(self, array: jax.Array, observation) -> jax.Array:
+        sigma = observation.observation_sigma
+        pred_ranges = jnp.linalg.norm(array - SENSOR_POS, axis=-1)  # (N, k)
+        if self.shuffle_observations and self.num_evaders > 1:
+            permuted = observation.ranges[self.perm_indices]  # (P, k)
+            diff = pred_ranges[:, None, :] - permuted[None, :, :]
+            log_per_perm = -0.5 * jnp.sum((diff / sigma) ** 2, axis=-1)
+            return jax.scipy.special.logsumexp(log_per_perm, axis=1)
+        return -0.5 * jnp.sum(((pred_ranges - observation.ranges) / sigma) ** 2, axis=-1)
+
+    def constrain(self, array: jax.Array) -> jax.Array:
+        return jax.vmap(jax.vmap(lambda p: clip_to_valid(p, self.obstacles)))(array)
+
+    def observation_present(self, observation) -> jax.Array:
+        return observation.ranges[0] >= 0.0
+
 
 def build_pursuit_evasion_env(
     num_evaders: int = 1,

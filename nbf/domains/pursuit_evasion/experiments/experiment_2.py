@@ -4,29 +4,28 @@ import jax
 import matplotlib.pyplot as plt
 import numpy as np
 
-from nbf.domains.pursuit_evasion.eval.base import (
+from nbf.domains.pursuit_evasion.eval.base import make_env_kn
+from nbf.domains.pursuit_evasion.eval.dispatch import (
+    compute_method_samples_and_density,
+    prepare_oracle_and_negatives,
+)
+from nbf.domains.pursuit_evasion.policies import (
+    TRAIN_MIXTURE_COMPONENTS,
+    sample_train_component_policy,
+)
+from nbf.eval._tex import fmt_val
+from nbf.eval.base import (
     load_model_for_k,
-    make_env_kn,
     parse_csv_ks,
     parse_csv_methods,
     parse_seeds,
     rollout_episodes,
 )
-from nbf.domains.pursuit_evasion.eval.dispatch import (
-    NUM_NEGATIVES,
-    NUM_REF_SAMPLES,
-    compute_method_samples_and_density,
-    prepare_oracle_and_negatives,
-)
-from nbf.domains.pursuit_evasion.eval.metrics import (
+from nbf.eval.dispatch import NUM_NEGATIVES, NUM_REF_SAMPLES
+from nbf.eval.metrics import (
     METRIC_FNS,
     aggregate_mean_sem,
     aggregate_per_step_mean_sem,
-)
-from nbf.domains.pursuit_evasion.experiments._tex import fmt_val
-from nbf.domains.pursuit_evasion.policies import (
-    TRAIN_MIXTURE_COMPONENTS,
-    sample_train_component_policy,
 )
 
 DEFAULT_KS = (1, 2, 3, 5)

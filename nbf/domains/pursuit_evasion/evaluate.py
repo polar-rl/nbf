@@ -8,7 +8,7 @@ import jax
 # UKF/GMF require f64 for numerical stability.
 jax.config.update('jax_enable_x64', True)
 
-from nbf.domains.pursuit_evasion.eval.base import load_embedding_model, parse_seeds  # noqa: E402
+from nbf.eval.base import load_embedding_model, parse_seeds  # noqa: E402
 
 EXPERIMENT_MODULES = {
     '1': 'nbf.domains.pursuit_evasion.experiments.experiment_1',
