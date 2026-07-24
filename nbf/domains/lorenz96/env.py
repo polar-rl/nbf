@@ -237,11 +237,12 @@ class Lorenz96Env(eqx.Module):
             axis=-1,
         )
         n = particles.x.shape[0]
-        return jax.lax.cond(
+        weights = jax.lax.cond(
             has_obs,
             lambda: jax.nn.softmax(log_likes),
             lambda: jnp.ones(n) / n,
         )
+        return weights, jnp.array(False)
 
     def state_array(self, state) -> jax.Array:
         return state.x

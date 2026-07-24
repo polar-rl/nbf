@@ -62,7 +62,7 @@ def _episode_batch(
             cur_state, timestep = env.step(cur_state, 0, step_k)
             obs = timestep.observation
 
-            cur_pset = cur_pset.simulate(env, 0, obs, sim_k)
+            cur_pset, _ = cur_pset.simulate(env, 0, obs, sim_k)
             cur_pset = jax.lax.cond(
                 cur_pset.neff() < num_pf_particles * resample_threshold,
                 lambda: cur_pset.systematic_resample(resample_k),

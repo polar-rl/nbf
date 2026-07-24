@@ -28,7 +28,7 @@ def _nbf_filter_collect_embeddings_stream_batch(
 
         def _step(embedding, xs):
             sk, state_t, prev_obs_t, next_obs_t = xs
-            embedding, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
+            embedding, _, _, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
             return embedding, embedding
 
         _, embs = jax.lax.scan(_step, embedding, (step_keys, states_next, obs_prev, obs_next))

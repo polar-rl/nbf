@@ -156,14 +156,14 @@ class TestObservationWeights:
     def test_uniform_when_sentinel(self, env, key):
         state, ts = env.reset(key)
         particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 16))
-        w = env.observation_weights(particles, None, ts.observation)
+        w, _ = env.observation_weights(particles, None, ts.observation)
         assert np.allclose(w, np.ones(16) / 16)
 
     def test_matches_analytic_softmax(self, env, key):
         state, _ = env.reset(key)
         particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 32))
         gold = Lorenz96Observation(values=state.x[1::2] + 0.1, sigma_obs=state.sigma_obs)
-        w = env.observation_weights(particles, None, gold)
+        w, _ = env.observation_weights(particles, None, gold)
         log_likes = -0.5 * np.sum(
             ((np.asarray(particles.x)[:, 1::2] - np.asarray(gold.values)) / float(gold.sigma_obs))
             ** 2,

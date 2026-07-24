@@ -93,7 +93,7 @@ def _run_filter_capture(
         embedding = nbf.reset(env, state0, obs0, sk[0])
         captured = {}
         for t in range(T):
-            embedding, _ = nbf.update(
+            embedding, _, _, _ = nbf.update(
                 env,
                 embedding,
                 jax.tree.map(lambda x, t=t: x[t], states_next),
@@ -114,7 +114,7 @@ def _run_filter_capture(
         pf_set = pf.reset(env, state0, obs0, sk[0])
         captured = {}
         for t in range(T):
-            pf_set, _ = pf.update(
+            pf_set, _, _, _ = pf.update(
                 env,
                 pf_set,
                 jax.tree.map(lambda x, t=t: x[t], states_next),

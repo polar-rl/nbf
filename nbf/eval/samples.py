@@ -53,7 +53,7 @@ def pf_reference_sample_stream_batch(
 
         def _step(pf_set, xs):
             sk, samp_k, state_t, prev_obs_t, next_obs_t = xs
-            pf_set, _ = pf.update(env, pf_set, state_t, prev_obs_t, 0, next_obs_t, sk)
+            pf_set, _, _, _ = pf.update(env, pf_set, state_t, prev_obs_t, 0, next_obs_t, sk)
             samples = pf.sample(pf_set, state_t, num_ref_samples, samp_k)
             return pf_set, env.state_array(samples)
 
@@ -95,7 +95,7 @@ def pf_samples_density_stream_batch(
 
         def _step(pf_set, xs):
             sk, samp_k, state_t, prev_obs_t, next_obs_t, neg = xs
-            pf_set, _ = pf.update(env, pf_set, state_t, prev_obs_t, 0, next_obs_t, sk)
+            pf_set, _, _, _ = pf.update(env, pf_set, state_t, prev_obs_t, 0, next_obs_t, sk)
             samps = env.state_array(pf.sample(pf_set, state_t, num_ref_samples, samp_k))
             lp_pos, lp_neg = _pf_density_step(env, pf_set, env.state_array(state_t), neg, bandwidth)
             return pf_set, (samps, lp_pos, lp_neg)
@@ -180,7 +180,7 @@ def gold_smc_reference_sample_stream_batch(
 
         def _step(pf_set, xs):
             sk, rk, samp_k, state_t, prev_obs_t, next_obs_t = xs
-            pf_set, _ = pf.update(env, pf_set, state_t, prev_obs_t, 0, next_obs_t, sk)
+            pf_set, _, _, _ = pf.update(env, pf_set, state_t, prev_obs_t, 0, next_obs_t, sk)
             force_rk, mcmc_k = jax.random.split(rk)
             pf_set = pf_set.systematic_resample(force_rk)
             pf_set = rejuvenate_particles(
@@ -227,7 +227,7 @@ def nbf_reference_sample_stream_batch(
 
         def _step(embedding, xs):
             sk, samp_k, state_t, prev_obs_t, next_obs_t = xs
-            embedding, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
+            embedding, _, _, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
             samples = nbf.sample(embedding, state_t, num_ref_samples, samp_k)
             return embedding, env.state_array(samples)
 
@@ -271,7 +271,7 @@ def nbf_samples_density_stream_batch(
 
         def _step(embedding, xs):
             sk, samp_k, state_t, prev_obs_t, next_obs_t, neg = xs
-            embedding, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
+            embedding, _, _, _ = nbf.update(env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk)
             samps = env.state_array(nbf.sample(embedding, state_t, num_ref_samples, samp_k))
             lp_pos, lp_neg = _nbf_density_step(
                 embedding_model, embedding, env, env.state_array(state_t), neg
