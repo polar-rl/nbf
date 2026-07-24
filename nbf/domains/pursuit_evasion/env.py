@@ -297,11 +297,14 @@ class PursuitEvasionEnv(eqx.Module):
                 axis=-1,
             )
         n = particles.positions.shape[0]
-        return jax.lax.cond(
+        weights = jax.lax.cond(
             has_obs,
             lambda: jax.nn.softmax(log_likes),
             lambda: jnp.ones(n) / n,
         )
+
+        # We never discard an observation, so the uniform-fallback flag is always False here.
+        return weights, jnp.array(False)
 
 
 def build_pursuit_evasion_env(

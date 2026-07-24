@@ -160,7 +160,7 @@ class TestObservationWeights:
         keys = jax.random.split(key, n)
         states, timesteps = jax.vmap(env.reset)(keys)
         gold = jax.tree.map(lambda x: x[0], timesteps.observation)
-        w = env.observation_weights(states, timesteps.observation, gold)
+        w, _ = env.observation_weights(states, timesteps.observation, gold)
         assert w.shape == (n,)
         assert jnp.allclose(w, jnp.ones(n) / n)
 
@@ -174,7 +174,7 @@ class TestObservationWeights:
         next_states, next_ts = jax.vmap(lambda s, k: env_p.step(s, 0, k))(states, step_keys)
 
         gold = jax.tree.map(lambda x: x[0], next_ts.observation)
-        w = env_p.observation_weights(next_states, next_ts.observation, gold)
+        w, _ = env_p.observation_weights(next_states, next_ts.observation, gold)
         assert w.shape == (n,)
         assert jnp.all(w >= 0)
         assert float(jnp.sum(w)) == pytest.approx(1.0, rel=1e-5)
@@ -261,6 +261,6 @@ class TestMultiEvader:
 
         obs = PursuitEvasionObservation(ranges=jnp.array([3.0, 7.0]))
         obs_perm = PursuitEvasionObservation(ranges=jnp.array([7.0, 3.0]))
-        w = env_p.observation_weights(particles, obs, obs)
-        w_perm = env_p.observation_weights(particles, obs_perm, obs_perm)
+        w, _ = env_p.observation_weights(particles, obs, obs)
+        w_perm, _ = env_p.observation_weights(particles, obs_perm, obs_perm)
         assert jnp.allclose(w, w_perm, atol=1e-5)

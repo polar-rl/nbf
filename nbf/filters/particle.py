@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -14,13 +16,14 @@ class ParticleSet(eqx.Module):
     @eqx.filter_jit
     def simulate(
         self, env: Environment, action: int, observation: Observation, key: jax.Array
-    ) -> 'ParticleSet':
-        sim_keys = jax.random.split(key, self.weights.shape[0])
+    ) -> tuple[ParticleSet, jax.Array]:
         particles, timesteps = jax.vmap(env.step, in_axes=(0, None, 0))(
-            self.particles, action, sim_keys
+            self.particles, action, jax.random.split(key, self.weights.shape[0])
         )
 
-        obs_weights = env.observation_weights(particles, timesteps.observation, observation)
+        obs_weights, discarded = env.observation_weights(
+            particles, timesteps.observation, observation
+        )
         new_weights = self.weights * obs_weights
 
         weight_sum = jnp.sum(new_weights)
@@ -30,7 +33,7 @@ class ParticleSet(eqx.Module):
             lambda: obs_weights,
         )
 
-        return ParticleSet(particles, weights)
+        return ParticleSet(particles, weights), discarded
 
     @eqx.filter_jit
     def neff(self) -> float:
@@ -40,7 +43,7 @@ class ParticleSet(eqx.Module):
         return jax.lax.cond(is_defined, lambda: 1.0 / denominator, lambda: 0.0)
 
     @eqx.filter_jit
-    def systematic_resample(self, key: jax.Array) -> 'ParticleSet':
+    def systematic_resample(self, key: jax.Array) -> ParticleSet:
         num_particles = self.weights.shape[0]
 
         cdf = jnp.cumsum(self.weights)
@@ -154,9 +157,11 @@ class ParticleFilter(eqx.Module):
         action: int,
         next_observation: Observation,
         key: jax.Array,
-    ) -> tuple[ParticleSet, float]:
+    ) -> tuple[ParticleSet, jax.Array, jax.Array, jax.Array]:
         key, simulate_key = jax.random.split(key, 2)
-        particle_set = particle_set.simulate(env, action, next_observation, simulate_key)
+        particle_set, simulation_fallback = particle_set.simulate(
+            env, action, next_observation, simulate_key
+        )
 
         key, resample_key = jax.random.split(key, 2)
         particle_set = jax.lax.cond(
@@ -165,7 +170,8 @@ class ParticleFilter(eqx.Module):
             lambda: particle_set,
         )
 
-        return particle_set, particle_set.neff()
+        # A SIR filter has no sampling pass, so that flag is always False here.
+        return particle_set, particle_set.neff(), jnp.array(False), simulation_fallback
 
     @eqx.filter_jit
     def reset(
@@ -176,6 +182,6 @@ class ParticleFilter(eqx.Module):
         features = jax.vmap(lambda p: p.to_flat_features())(particles)
         particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
         observations = jax.vmap(lambda p: p.observation_from_state())(particles)
-        weights = env.observation_weights(particles, observations, observation)
+        weights, _ = env.observation_weights(particles, observations, observation)
 
         return ParticleSet(particles, weights)
