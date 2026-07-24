@@ -196,13 +196,55 @@ class TestPriorSampler:
         assert np.allclose(np.asarray(pset.particles.forcing), float(state.forcing))
 
 
+class TestObsPattern:
+    def test_fully_observed_env(self, key):
+        env = Lorenz96Env(K=6, time_limit=5, obs_sites=tuple(range(6)))
+        assert env.num_obs == 6
+        state, ts = env.reset(key)
+        assert ts.observation.values.shape == (6,)
+        assert np.allclose(state.observation_from_state().values, state.x)
+        next_state, ts = env.step(state, 0, key)
+        assert ts.observation.values.shape == (6,)
+        assert np.all(np.abs(np.asarray(ts.observation.values) - np.asarray(next_state.x)) < 7.5)
+
+    def test_custom_sites_thread_through_weights(self, key):
+        env = Lorenz96Env(K=6, time_limit=5, obs_sites=(0, 3))
+        state, _ = env.reset(key)
+        particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 16))
+        gold = Lorenz96Observation(values=state.x[jnp.array([0, 3])], sigma_obs=state.sigma_obs)
+        w, _ = env.observation_weights(particles, None, gold)
+        log_likes = -0.5 * np.sum(
+            ((np.asarray(particles.x)[:, [0, 3]] - np.asarray(gold.values)) / float(gold.sigma_obs))
+            ** 2,
+            axis=-1,
+        )
+        expected = np.exp(log_likes - log_likes.max())
+        expected /= expected.sum()
+        assert np.allclose(w, expected, atol=1e-5)
+
+    def test_odd_k_requires_explicit_sites(self):
+        with pytest.raises(ValueError):
+            Lorenz96Env(K=7, time_limit=5)
+        env = Lorenz96Env(K=7, time_limit=5, obs_sites=(1, 3, 5))
+        assert env.num_obs == 3
+
+    def test_redraw_guards_sigma_dyn_zero(self, key):
+        with pytest.raises(ValueError):
+            conditional_gaussian_redraw(
+                jnp.zeros((4, 8)), jnp.zeros(4), jnp.arange(1, 8, 2), 0.0, 1.0, key
+            )
+        env = Lorenz96Env(K=8, time_limit=5, sigma_dyn=0.0)
+        with pytest.raises(ValueError):
+            env.transition_log_prob(jnp.zeros((4, 8)), jnp.zeros((4, 8)))
+
+
 class TestRejuvenation:
     def test_exact_redraw_moments(self, key):
         K = 8
         sigma_dyn, sigma_obs = 0.3, 0.6
         means = jnp.tile(jnp.arange(K, dtype=jnp.float32)[None], (40000, 1))
         y = jnp.arange(K, dtype=jnp.float32)[1::2] + 0.5
-        x = conditional_gaussian_redraw(means, y, sigma_dyn, sigma_obs, key)
+        x = conditional_gaussian_redraw(means, y, jnp.arange(1, K, 2), sigma_dyn, sigma_obs, key)
         x = np.asarray(x)
         post_var = 1.0 / (1.0 / sigma_dyn**2 + 1.0 / sigma_obs**2)
         post_mean = post_var * (np.arange(K)[1::2] / sigma_dyn**2 + np.asarray(y) / sigma_obs**2)
@@ -213,7 +255,9 @@ class TestRejuvenation:
 
     def test_no_duplicates_after_redraw(self, key):
         means = jnp.zeros((512, 8))
-        x = np.asarray(conditional_gaussian_redraw(means, jnp.zeros(4), 0.25, 1.0, key))
+        x = np.asarray(
+            conditional_gaussian_redraw(means, jnp.zeros(4), jnp.arange(1, 8, 2), 0.25, 1.0, key)
+        )
         assert np.unique(x, axis=0).shape[0] == 512
 
     def test_exact_redraw_matches_rw_mh(self, key):
@@ -223,7 +267,12 @@ class TestRejuvenation:
         means = jnp.tile(jnp.linspace(-1.0, 1.0, K)[None], (n, 1))
         y = jnp.linspace(-1.0, 1.0, K)[1::2] + 0.4
         exact_key, mh_key = jax.random.split(key)
-        exact = np.asarray(conditional_gaussian_redraw(means, y, sigma_dyn, sigma_obs, exact_key))
-        mh = np.asarray(rw_mh_redraw(means, means, y, sigma_dyn, sigma_obs, 400, 0.15, mh_key))
+        obs_idx = jnp.arange(1, K, 2)
+        exact = np.asarray(
+            conditional_gaussian_redraw(means, y, obs_idx, sigma_dyn, sigma_obs, exact_key)
+        )
+        mh = np.asarray(
+            rw_mh_redraw(means, means, y, obs_idx, sigma_dyn, sigma_obs, 400, 0.15, mh_key)
+        )
         assert np.allclose(exact.mean(axis=0), mh.mean(axis=0), atol=0.05)
         assert np.allclose(exact.std(axis=0), mh.std(axis=0), atol=0.05)

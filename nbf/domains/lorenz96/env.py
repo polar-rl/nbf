@@ -34,9 +34,9 @@ def rk4_window(x, forcing, dt, substeps, linear=False):
     return jax.lax.fori_loop(0, substeps, body, x)
 
 
-def conditional_gaussian_redraw(means, obs_values, sigma_dyn, sigma_obs, key):
-    K = means.shape[-1]
-    obs_idx = jnp.arange(1, K, 2)
+def conditional_gaussian_redraw(means, obs_values, obs_idx, sigma_dyn, sigma_obs, key):
+    if sigma_dyn <= 0:
+        raise ValueError('conditional_gaussian_redraw requires sigma_dyn > 0')
     noise = jax.random.normal(key, means.shape)
     x = means + sigma_dyn * noise
     post_var = 1.0 / (1.0 / sigma_dyn**2 + 1.0 / sigma_obs**2)
@@ -45,9 +45,9 @@ def conditional_gaussian_redraw(means, obs_values, sigma_dyn, sigma_obs, key):
     return x.at[..., obs_idx].set(x_obs)
 
 
-def rw_mh_redraw(x, means, obs_values, sigma_dyn, sigma_obs, num_steps, step_size, key):
-    K = x.shape[-1]
-    obs_idx = jnp.arange(1, K, 2)
+def rw_mh_redraw(x, means, obs_values, obs_idx, sigma_dyn, sigma_obs, num_steps, step_size, key):
+    if sigma_dyn <= 0:
+        raise ValueError('rw_mh_redraw requires sigma_dyn > 0')
 
     def log_target(x):
         lp_trans = -0.5 * jnp.sum(((x - means) / sigma_dyn) ** 2, axis=-1)
@@ -78,6 +78,7 @@ class Lorenz96State(State):
     center: jax.Array
     norm_mean: jax.Array
     norm_std: jax.Array
+    obs_idx: jax.Array
 
     @property
     def max_feature_value(self) -> int:
@@ -90,10 +91,7 @@ class Lorenz96State(State):
         return eqx.tree_at(lambda s: s.x, self, features * self.norm_std + self.norm_mean)
 
     def observation_from_state(self) -> Observation:
-        K = self.x.shape[-1]
-        return Lorenz96Observation(
-            values=self.x[..., jnp.arange(1, K, 2)], sigma_obs=self.sigma_obs
-        )
+        return Lorenz96Observation(values=self.x[..., self.obs_idx], sigma_obs=self.sigma_obs)
 
 
 class Lorenz96Observation(Observation):
@@ -112,6 +110,7 @@ class Lorenz96Generator(eqx.Module):
     f_bands: jax.Array
     norm_mean: jax.Array
     norm_std: jax.Array
+    obs_idx: jax.Array
 
     def __call__(self, key: jax.Array) -> Lorenz96State:
         band_key, f_key, sigma_key, init_key, delta_key = jax.random.split(key, 5)
@@ -137,6 +136,7 @@ class Lorenz96Generator(eqx.Module):
             center=center,
             norm_mean=self.norm_mean,
             norm_std=self.norm_std,
+            obs_idx=self.obs_idx,
         )
 
 
@@ -148,6 +148,7 @@ class Lorenz96Env(eqx.Module):
     sigma_dyn: float = eqx.field(static=True)
     sigma_init: float = eqx.field(static=True)
     linear: bool = eqx.field(static=True)
+    obs_sites: tuple = eqx.field(static=True)
     norm_mean: jax.Array
     norm_std: jax.Array
     generator: Lorenz96Generator
@@ -171,9 +172,15 @@ class Lorenz96Env(eqx.Module):
         norm_mean: float = 0.0,
         norm_std: float = 1.0,
         linear: bool = False,
+        obs_sites: tuple | None = None,
     ):
-        if K % 2 != 0:
-            raise ValueError(f'K must be even (odd-site observations), got {K}')
+        if obs_sites is None:
+            if K % 2 != 0:
+                raise ValueError(f'K must be even (odd-site observations), got {K}')
+            obs_sites = tuple(range(1, K, 2))
+        if any(i < 0 or i >= K for i in obs_sites):
+            raise ValueError(f'obs_sites must lie in [0, {K}), got {obs_sites}')
+        self.obs_sites = tuple(obs_sites)
         self.K = K
         self.time_limit = time_limit
         self.dt = dt
@@ -194,6 +201,7 @@ class Lorenz96Env(eqx.Module):
             f_bands=jnp.asarray(f_bands),
             norm_mean=jnp.asarray(norm_mean),
             norm_std=jnp.asarray(norm_std),
+            obs_idx=jnp.asarray(self.obs_sites),
         )
         self.has_state_observation = False
         self.has_continuous_features = True
@@ -201,12 +209,16 @@ class Lorenz96Env(eqx.Module):
 
     @property
     def obs_idx(self) -> jax.Array:
-        return jnp.arange(1, self.K, 2)
+        return jnp.asarray(self.obs_sites)
+
+    @property
+    def num_obs(self) -> int:
+        return len(self.obs_sites)
 
     def reset(self, key: jax.Array):
         state = self.generator(key)
         obs = Lorenz96Observation(
-            values=jnp.full(self.K // 2, OBS_SENTINEL), sigma_obs=state.sigma_obs
+            values=jnp.full(self.num_obs, OBS_SENTINEL), sigma_obs=state.sigma_obs
         )
         return state, restart(observation=obs)
 
@@ -220,7 +232,7 @@ class Lorenz96Env(eqx.Module):
             state,
             (x, state.step_count + 1, done),
         )
-        values = x[self.obs_idx] + state.sigma_obs * jax.random.normal(obs_key, (self.K // 2,))
+        values = x[self.obs_idx] + state.sigma_obs * jax.random.normal(obs_key, (self.num_obs,))
         observation = Lorenz96Observation(values=values, sigma_obs=state.sigma_obs)
         timestep = jax.lax.cond(done, termination, transition, 0.0, observation)
         return next_state, timestep
@@ -260,6 +272,8 @@ class Lorenz96Env(eqx.Module):
         )
 
     def transition_log_prob(self, propagated_means: jax.Array, array: jax.Array) -> jax.Array:
+        if self.sigma_dyn <= 0:
+            raise ValueError('transition_log_prob requires sigma_dyn > 0')
         return -0.5 * jnp.sum(((array - propagated_means) / self.sigma_dyn) ** 2, axis=-1)
 
     def constrain(self, array: jax.Array) -> jax.Array:
@@ -269,7 +283,7 @@ class Lorenz96Env(eqx.Module):
         return observation.values[0] > _OBS_PRESENT_THRESHOLD
 
 
-def build_lorenz96_env(data_cfg, *, time_limit=None, linear=False) -> Lorenz96Env:
+def build_lorenz96_env(data_cfg, *, time_limit=None, linear=False, obs_sites=None) -> Lorenz96Env:
     return Lorenz96Env(
         K=data_cfg.K,
         time_limit=data_cfg.episode_length if time_limit is None else time_limit,
@@ -284,4 +298,5 @@ def build_lorenz96_env(data_cfg, *, time_limit=None, linear=False) -> Lorenz96En
         norm_mean=data_cfg.norm_mean if data_cfg.norm_mean is not None else 0.0,
         norm_std=data_cfg.norm_std if data_cfg.norm_std is not None else 1.0,
         linear=linear,
+        obs_sites=obs_sites,
     )

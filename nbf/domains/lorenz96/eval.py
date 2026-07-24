@@ -22,7 +22,7 @@ def gold_smc_sample_stream_batch(
     num_particles: int,
     num_ref_samples: int,
 ):
-    obs_idx = jnp.arange(1, env.K, 2)
+    obs_idx = env.obs_idx
 
     def _one(state0, obs_values, prior_key, step_keys):
         forcing, sigma_obs = state0.forcing, state0.sigma_obs
@@ -38,7 +38,9 @@ def gold_smc_sample_stream_batch(
             log_w = -0.5 * jnp.sum(((parts[:, obs_idx] - y) / sigma_obs) ** 2, axis=-1)
             w = jax.nn.softmax(log_w)
             idx = systematic_indices(w, res_key)
-            parts = conditional_gaussian_redraw(means[idx], y, env.sigma_dyn, sigma_obs, rej_key)
+            parts = conditional_gaussian_redraw(
+                means[idx], y, obs_idx, env.sigma_dyn, sigma_obs, rej_key
+            )
             samp_idx = jax.random.randint(samp_key, (num_ref_samples,), 0, num_particles)
             return parts, parts[samp_idx]
 

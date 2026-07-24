@@ -46,7 +46,7 @@ def scenario_block(
     num_samples: int,
     block_keys: Array,
 ):
-    obs_idx = jnp.arange(1, env.K, 2)
+    obs_idx = env.obs_idx
 
     def one(key):
         gen_key, prior_key, row0_key, scan_key = jax.random.split(key, 4)
@@ -70,7 +70,7 @@ def scenario_block(
 
             x_true = rk4_window(x_true, forcing, env.dt, env.substeps, env.linear)
             x_true = x_true + env.sigma_dyn * jax.random.normal(true_key, x_true.shape)
-            y = x_true[obs_idx] + sigma_obs * jax.random.normal(obs_key, (env.K // 2,))
+            y = x_true[obs_idx] + sigma_obs * jax.random.normal(obs_key, (env.num_obs,))
 
             means = rk4_window(parts, forcing, env.dt, env.substeps, env.linear)
             parts = means + env.sigma_dyn * jax.random.normal(prop_key, parts.shape)
@@ -80,7 +80,9 @@ def scenario_block(
             ps, ws = _subsample(parts, w, sub_key)
 
             idx = systematic_indices(w, res_key)
-            parts = conditional_gaussian_redraw(means[idx], y, env.sigma_dyn, sigma_obs, rej_key)
+            parts = conditional_gaussian_redraw(
+                means[idx], y, obs_idx, env.sigma_dyn, sigma_obs, rej_key
+            )
             return (x_true, parts), (ps, ws, x_true, y)
 
         _, (ps, ws, truth, obs) = jax.lax.scan(
