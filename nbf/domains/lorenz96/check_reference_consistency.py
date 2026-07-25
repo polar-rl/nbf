@@ -65,9 +65,20 @@ def main() -> None:
     parser.add_argument('--scale_method', type=str, default='pf_8192')
     parser.add_argument('--gate_frac', type=float, default=0.5)
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument(
+        '--forcing',
+        type=float,
+        default=None,
+        help='Pin F to this value (e.g. 8.0 for the held-out headline); default = training bands.',
+    )
     args = parser.parse_args()
 
-    env = build_lorenz96_env(DataConfig(K=args.K), time_limit=args.episode_length)
+    data_cfg = (
+        DataConfig(K=args.K)
+        if args.forcing is None
+        else DataConfig(K=args.K, f_bands=[[args.forcing, args.forcing]])
+    )
+    env = build_lorenz96_env(data_cfg, time_limit=args.episode_length)
     key = jax.random.PRNGKey(args.seed)
     rollout_key, run1_key, run2_key, method_key = jax.random.split(key, 4)
     state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = rollout_episodes(
@@ -87,9 +98,10 @@ def main() -> None:
             args.num_ref_samples,
         )
 
+    forcing_desc = 'training bands' if args.forcing is None else f'F={args.forcing}'
     print(
         f'Two gold-SMC runs: K={args.K}, N={args.num_particles}, '
-        f'{N} episodes x T={T}, S={args.num_ref_samples}'
+        f'{N} episodes x T={T}, S={args.num_ref_samples}, {forcing_desc}'
     )
     samps1, ess1, uniq1 = _run(run1_key)
     samps2, ess2, uniq2 = _run(run2_key)

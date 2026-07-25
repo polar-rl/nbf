@@ -21,7 +21,7 @@
 # Tunables (env vars):
 #   PROJECT_DIR    repo checkout on the cluster
 #   SCRATCH_BASE   scratch root containing results/
-#   METHODS, NUM_EPISODES, EPISODE_LENGTH, SEEDS
+#   METHODS, NUM_EPISODES, EPISODE_LENGTH, SEEDS, GOLD_SMC_COUNT
 set -euo pipefail
 
 CELL="l${SLURM_ARRAY_TASK_ID}"
@@ -34,6 +34,7 @@ OUT_DIR="${SCRATCH_BASE}/results/k20/grid"
 NUM_EPISODES=${NUM_EPISODES:-100}
 EPISODE_LENGTH=${EPISODE_LENGTH:-0}
 SEEDS=${SEEDS:-0,1,2,3,4}
+GOLD_SMC_COUNT=${GOLD_SMC_COUNT:-200000}
 
 mkdir -p "${OUT_DIR}" "/home/solinas/scratch/logs"
 
@@ -43,8 +44,10 @@ module load cuda
 unset LD_LIBRARY_PATH
 source .venv/bin/activate
 export PYTHONDONTWRITEBYTECODE=1
+export NBF_GOLD_SMC_COUNT="${GOLD_SMC_COUNT}"
 
 echo "Cell: ${CELL}"
+echo "Gold-SMC oracle particles: ${NBF_GOLD_SMC_COUNT}"
 echo "Model dir: ${MODEL_DIR}"
 echo "Output dir: ${OUT_DIR}"
 

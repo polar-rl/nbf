@@ -33,9 +33,9 @@ training:
 data:
   K: 20
   num_scenarios: 5000
-  block_size: 50
+  block_size: 20
   episode_length: 20
-  num_pf_particles: 100000
+  num_pf_particles: 400000
   dt: 0.01
   window_substeps: 5
   sigma_dyn: 0.25
