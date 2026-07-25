@@ -4,10 +4,12 @@ import numpy as np
 import pytest
 
 from nbf.domains.lorenz96.env import Lorenz96Env, rk4_window
-from nbf.domains.lorenz96.eval import compute_l96_gold_smc_samples
+from nbf.domains.lorenz96.eval_utils import (
+    compute_l96_gold_smc_samples,
+    compute_method_samples,
+)
 from nbf.domains.lorenz96.generate_data import scenario_block
 from nbf.eval.base import rollout_episodes
-from nbf.eval.dispatch import compute_method_samples
 
 K = 6
 SIGMA_DYN = 0.3
@@ -81,13 +83,21 @@ def _check_samples_against_kf(samples_NTSK, state0_b, obs_next_b, env, mean_atol
 
 
 class TestLinearModeOracle:
-    def test_bootstrap_pf_through_dispatch(self, env, key):
+    @pytest.mark.parametrize(
+        ('spec', 'mean_atol', 'var_rtol'),
+        [
+            ('pf_16384', 0.15, 0.35),
+            ('pf_reg_16384', 0.15, 0.45),
+            ('pf_rm_16384', 0.15, 0.35),
+        ],
+    )
+    def test_filters_through_dispatch(self, env, key, spec, mean_atol, var_rtol):
         rollout_key, method_key = jax.random.split(key)
         state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = rollout_episodes(
             env, T, 2, rollout_key
         )
         samples = compute_method_samples(
-            'pf_16384',
+            spec,
             env=env,
             embedding_model=None,
             state0_b=state0_b,
@@ -99,7 +109,7 @@ class TestLinearModeOracle:
             key=method_key,
         )
         _check_samples_against_kf(
-            np.asarray(samples), state0_b, obs_next_b, env, mean_atol=0.15, var_rtol=0.35
+            np.asarray(samples), state0_b, obs_next_b, env, mean_atol=mean_atol, var_rtol=var_rtol
         )
 
     def test_gold_smc_eval_stream(self, env, key):

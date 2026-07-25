@@ -11,7 +11,7 @@ import numpy as np  # noqa: E402
 from nbf.config import build_dataclass  # noqa: E402
 from nbf.domains.lorenz96.config import DataConfig  # noqa: E402
 from nbf.domains.lorenz96.env import build_lorenz96_env  # noqa: E402
-from nbf.domains.lorenz96.eval import compute_l96_gold_smc_samples  # noqa: E402
+from nbf.domains.lorenz96.eval_utils import compute_l96_gold_smc_samples  # noqa: E402
 from nbf.eval.base import load_embedding_model, rollout_episodes  # noqa: E402
 from nbf.eval.dispatch import (  # noqa: E402
     GOLD_SMC_COUNT,

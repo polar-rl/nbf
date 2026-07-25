@@ -271,6 +271,14 @@ class Lorenz96Env(eqx.Module):
             axis=-1,
         )
 
+    def propagate_mean_array(self, state) -> jax.Array:
+        return rk4_window(state.x, state.forcing, self.dt, self.substeps, self.linear)
+
+    def conjugate_move(self, means: jax.Array, observation, key: jax.Array) -> jax.Array:
+        return conditional_gaussian_redraw(
+            means, observation.values, self.obs_idx, self.sigma_dyn, observation.sigma_obs, key
+        )
+
     def transition_log_prob(self, propagated_means: jax.Array, array: jax.Array) -> jax.Array:
         if self.sigma_dyn <= 0:
             raise ValueError('transition_log_prob requires sigma_dyn > 0')

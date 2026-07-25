@@ -87,6 +87,14 @@ def mmd2_multibw_per_step_batch(method_samples: Array, oracle_samples: Array) ->
     return jax.vmap(jax.vmap(_step))(method_samples, oracle_samples)
 
 
+@eqx.filter_jit
+def rmse_per_step_batch(method_samples: Array, truth_states: Array) -> Array:
+    S = method_samples.shape[2]
+    mean = method_samples.reshape(*method_samples.shape[:2], S, -1).mean(axis=2)
+    truth = truth_states.reshape(*truth_states.shape[:2], -1)
+    return jnp.sqrt(jnp.mean((mean - truth) ** 2, axis=-1))
+
+
 METRIC_FNS = {
     'mmd': mmd2_per_step_batch,
     'mmd_multibw': mmd2_multibw_per_step_batch,

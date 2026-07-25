@@ -89,11 +89,9 @@ def load_embedding_model(model_dir, key):
 def parse_method_spec(spec: str) -> tuple[str, int]:
     if spec == 'pf_oracle':
         return 'pf_oracle', 0
-    if spec.startswith('nbf_'):
-        return 'nbf', int(spec[len('nbf_') :])
-    if spec.startswith('pf_'):
-        return 'pf', int(spec[len('pf_') :])
-    kind, n = spec.split('_', 1)
+    kind, _, n = spec.rpartition('_')
+    if not kind:
+        raise ValueError(f'Invalid method spec {spec!r}')
     return kind, int(n)
 
 

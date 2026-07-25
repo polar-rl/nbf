@@ -22,20 +22,13 @@ from nbf.domains.lorenz96.env import (
     conditional_gaussian_redraw,
     rk4_window,
 )
+from nbf.filters.particle import systematic_indices
 
 MAX_ABS_FP16 = 60000.0
 
 
 def data_dirname(K: int) -> str:
     return f'l96_belief_data_K{K}'
-
-
-def systematic_indices(weights: Array, key: Array) -> Array:
-    n = weights.shape[0]
-    cdf = jnp.cumsum(weights)
-    x0 = jax.random.uniform(key, (), minval=0.0, maxval=1.0 / n)
-    positions = x0 + jnp.arange(n) / n
-    return jnp.searchsorted(cdf, positions, side='left')
 
 
 @eqx.filter_jit

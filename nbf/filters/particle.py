@@ -1,5 +1,3 @@
-from __future__ import annotations
-
 import equinox as eqx
 import jax
 import jax.numpy as jnp
@@ -9,6 +7,14 @@ from jumanji.env import Environment
 from nbf.base_types import Observation, State
 
 
+def systematic_indices(weights: jax.Array, key: jax.Array) -> jax.Array:
+    n = weights.shape[0]
+    cdf = jnp.cumsum(weights)
+    x0 = jax.random.uniform(key, (), minval=0.0, maxval=1.0 / n)
+    positions = x0 + jnp.arange(n) / n
+    return jnp.searchsorted(cdf, positions, side='left')
+
+
 class ParticleSet(eqx.Module):
     particles: State
     weights: jax.Array
@@ -16,7 +22,7 @@ class ParticleSet(eqx.Module):
     @eqx.filter_jit
     def simulate(
         self, env: Environment, action: int, observation: Observation, key: jax.Array
-    ) -> tuple[ParticleSet, jax.Array]:
+    ) -> tuple['ParticleSet', jax.Array]:
         particles, timesteps = jax.vmap(env.step, in_axes=(0, None, 0))(
             self.particles, action, jax.random.split(key, self.weights.shape[0])
         )
@@ -43,13 +49,9 @@ class ParticleSet(eqx.Module):
         return jax.lax.cond(is_defined, lambda: 1.0 / denominator, lambda: 0.0)
 
     @eqx.filter_jit
-    def systematic_resample(self, key: jax.Array) -> ParticleSet:
+    def systematic_resample(self, key: jax.Array) -> 'ParticleSet':
         num_particles = self.weights.shape[0]
-
-        cdf = jnp.cumsum(self.weights)
-        x0 = jax.random.uniform(key, (), minval=0.0, maxval=1.0 / num_particles)
-        positions = x0 + jnp.arange(num_particles) / num_particles
-        indices = jnp.searchsorted(cdf, positions, side='left')
+        indices = systematic_indices(self.weights, key)
 
         particles = jax.tree.map(lambda x: x[indices], self.particles)
         weights = jnp.full(num_particles, 1 / num_particles)
@@ -91,6 +93,11 @@ RECOMMENDED_PF_KDE_BANDWIDTH: dict[tuple[int, int], float] = {
     (5, 2048): 2.00,
     (5, 4096): 2.00,
     (5, 8192): 2.00,
+    # Lorenz-96 K=20 (raw state units, climatological std ~3.6); swept via
+    # nbf.domains.lorenz96.tune_kde, min normalized NLL (2026-07-24).
+    (20, 1024): 1.50,
+    (20, 8192): 1.25,
+    (20, 65536): 1.00,
 }
 
 
@@ -188,3 +195,56 @@ class ParticleFilter(eqx.Module):
         weights, _ = env.observation_weights(particles, observations, observation)
 
         return ParticleSet(particles, weights)
+
+
+class RegularizedParticleFilter(ParticleFilter):
+    """SIR with post-resample KDE jitter (Silverman bandwidth on the pre-resample ensemble)."""
+
+    bandwidth_scale: float = 1.0
+
+    def __repr__(self) -> str:
+        return f'PF-Reg ({self.num_particles})'
+
+    @eqx.filter_jit
+    def update(
+        self,
+        env: Environment,
+        particle_set: ParticleSet,
+        state: State,
+        observation: Observation,
+        action: int,
+        next_observation: Observation,
+        key: jax.Array,
+    ) -> tuple[ParticleSet, jax.Array, jax.Array, jax.Array]:
+        key, simulate_key = jax.random.split(key, 2)
+        particle_set, simulation_fallback = particle_set.simulate(
+            env, action, next_observation, simulate_key
+        )
+        key, resample_key = jax.random.split(key, 2)
+        key, jitter_key = jax.random.split(key, 2)
+
+        parts = env.state_array(particle_set.particles)
+        flat = parts.reshape(parts.shape[0], -1)
+        n, d = flat.shape
+        w = particle_set.weights / (jnp.sum(particle_set.weights) + 1e-30)
+        mean = jnp.sum(w[:, None] * flat, axis=0)
+        diff = flat - mean
+        cov = (w[:, None] * diff).T @ diff
+        chol = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(d))
+        h = self.bandwidth_scale * (4.0 / (n * (d + 2.0))) ** (1.0 / (d + 4.0))
+
+        def _resample_and_jitter():
+            resampled = particle_set.systematic_resample(resample_key)
+            eps = jax.random.normal(jitter_key, (n, d))
+            jittered = env.state_array(resampled.particles).reshape(n, -1) + h * eps @ chol.T
+            particles = env.replace_state_array(
+                resampled.particles, env.constrain(jittered.reshape(parts.shape))
+            )
+            return ParticleSet(particles, resampled.weights)
+
+        particle_set = jax.lax.cond(
+            particle_set.neff() < self.num_particles * self.resample_factor,
+            _resample_and_jitter,
+            lambda: particle_set,
+        )
+        return particle_set, particle_set.neff(), jnp.array(False), simulation_fallback
