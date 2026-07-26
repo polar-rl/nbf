@@ -7,9 +7,14 @@ import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
-from embedex.distributions.builder import count_parameters, create_model
+from embedex.distributions.builder import create_model
 from embedex.distributions.training import train as _train
 from jax import Array
+
+
+def _count_parameters(model):
+    leaves = jax.tree_util.tree_leaves(eqx.filter(model, eqx.is_inexact_array))
+    return sum(leaf.size for leaf in leaves)
 
 
 def _plot_loss_curve(losses, *, log_interval, smoothing_window=16):
@@ -68,7 +73,7 @@ def run_training(
 
     key, model_key = jax.random.split(key)
     model = create_model(cfg.model, dequantize=False, key=model_key)
-    print(f'Model parameters: {count_parameters(model):,}')
+    print(f'Model parameters: {_count_parameters(model):,}')
 
     if cfg.load_model is not None:
         print(f'Loading model from {cfg.load_model}')
