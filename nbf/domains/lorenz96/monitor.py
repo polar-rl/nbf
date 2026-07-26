@@ -47,6 +47,17 @@ def belief_panel_metrics(model, parts_b, weights_b, norm_mean, norm_std, num_sam
     return jax.vmap(_one)(parts_b, weights_b, keys)
 
 
+@eqx.filter_jit
+def reconstruction_floor(parts_b, weights_b, num_samples, keys):
+    def _one(parts, w, key):
+        k1, k2 = jax.random.split(key)
+        ia = jax.random.choice(k1, w.shape[0], (num_samples,), p=w)
+        ib = jax.random.choice(k2, w.shape[0], (num_samples,), p=w)
+        return parts[ia], parts[ib]
+
+    return jax.vmap(_one)(parts_b, weights_b, keys)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='L96 training monitor (MMD panel vs reference).')
     parser.add_argument('--model_dir', type=str, required=True)
@@ -55,6 +66,12 @@ def main() -> None:
     parser.add_argument('--num_beliefs', type=int, default=50)
     parser.add_argument('--num_samples', type=int, default=1024)
     parser.add_argument('--seed', type=int, default=42)
+    parser.add_argument(
+        '--pf_mmd',
+        type=float,
+        default=None,
+        help='PF-8192-vs-oracle MMD^2 from the grid; draws the 2x go/no-go line and prints PASS/FAIL.',
+    )
     args = parser.parse_args()
     out_dir = args.output_dir or os.path.join(args.model_dir, 'monitor')
     os.makedirs(out_dir, exist_ok=True)
@@ -92,11 +109,24 @@ def main() -> None:
     mmd = np.asarray(mmd2_multibw_per_step_batch(gen_b[:, None], ref_b[:, None]))[:, 0]
     plugin = np.asarray(plugin_b)
 
+    floor_keys = jax.random.split(jax.random.PRNGKey(args.seed + 1), len(idx))
+    floor_a, floor_b = reconstruction_floor(parts_b, weights_b, args.num_samples, floor_keys)
+    floor = np.asarray(mmd2_multibw_per_step_batch(floor_a[:, None], floor_b[:, None]))[:, 0]
+
     ckpt_name = os.path.basename(ckpt_path)
     print(
         f'{ckpt_name}: mmd2 mean={mmd.mean():.5f} median={np.median(mmd):.5f} '
         f'max={mmd.max():.5f}; plugin loss mean={plugin.mean():.4f}'
     )
+    print(
+        f'  recon floor (perfect-recon null, ~0) mean={floor.mean():.5f} '
+        f'median={np.median(floor):.5f}; mmd2 above null={mmd.mean() - floor.mean():.5f}'
+    )
+    if args.pf_mmd is not None:
+        verdict = 'PASS' if mmd.mean() < 2.0 * args.pf_mmd else 'FAIL'
+        print(
+            f'  go/no-go: mmd2 mean={mmd.mean():.5f} vs 2x PF={2.0 * args.pf_mmd:.5f} -> {verdict}'
+        )
 
     csv_path = os.path.join(out_dir, 'monitor.csv')
     write_header = not os.path.exists(csv_path)
@@ -122,14 +152,25 @@ def main() -> None:
     axes[0].set_xlabel('forcing F')
     axes[0].set_ylabel('per-belief MMD$^2$')
     fig.colorbar(sc, ax=axes[0], label='step')
+    floor_line = max(float(floor.mean()), 0.0)
+    axes[0].axhline(floor_line, color='k', ls='--', lw=1, label=f'recon null {floor_line:.3f}')
+    if args.pf_mmd is not None:
+        axes[0].axhline(
+            2.0 * args.pf_mmd, color='r', ls=':', lw=1, label=f'2x PF {2.0 * args.pf_mmd:.3f}'
+        )
+    axes[0].legend(fontsize=7, loc='upper right')
     axes[1].scatter(step, plugin, c=forcing, cmap='coolwarm', s=18)
     axes[1].set_xlabel('step')
     axes[1].set_ylabel('plug-in loss')
     hist = np.genfromtxt(csv_path, delimiter=',', names=True, dtype=None, encoding=None)
     hist_mean = np.atleast_1d(hist['mmd2_mean'].astype(float))
-    axes[2].plot(hist_mean, marker='o')
+    axes[2].plot(hist_mean, marker='o', label='MMD$^2$ mean')
+    axes[2].axhline(floor_line, color='k', ls='--', lw=1, label='recon null')
+    if args.pf_mmd is not None:
+        axes[2].axhline(2.0 * args.pf_mmd, color='r', ls=':', lw=1, label='2x PF')
     axes[2].set_xlabel('monitor call')
     axes[2].set_ylabel('MMD$^2$ mean')
+    axes[2].legend(fontsize=7, loc='upper right')
     fig.suptitle(f'{ckpt_name} — {len(idx)} validation beliefs')
     fig.tight_layout()
     pdf_path = os.path.join(out_dir, 'monitor_panel.pdf')
