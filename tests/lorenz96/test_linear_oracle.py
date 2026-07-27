@@ -87,7 +87,7 @@ class TestLinearModeOracle:
         ('spec', 'mean_atol', 'var_rtol'),
         [
             ('pf_16384', 0.15, 0.35),
-            ('pf_reg_16384', 0.15, 0.45),
+            ('pf_reg_16384', 0.15, 0.35),
             ('pf_rm_16384', 0.15, 0.35),
         ],
     )

@@ -198,7 +198,12 @@ class ParticleFilter(eqx.Module):
 
 
 class RegularizedParticleFilter(ParticleFilter):
-    """SIR with post-resample KDE jitter (Silverman bandwidth on the pre-resample ensemble)."""
+    """SIR with post-resample KDE jitter (Silverman bandwidth on the pre-resample ensemble).
+
+    Uses the shrinkage kernel of Liu & West (2001): particles are contracted toward the
+    weighted mean by ``sqrt(1 - h^2)`` before the jitter is added, so the smoothing
+    preserves the ensemble covariance.
+    """
 
     bandwidth_scale: float = 1.0
 
@@ -233,10 +238,13 @@ class RegularizedParticleFilter(ParticleFilter):
         chol = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(d))
         h = self.bandwidth_scale * (4.0 / (n * (d + 2.0))) ** (1.0 / (d + 4.0))
 
+        shrink = jnp.sqrt(jnp.maximum(1.0 - h * h, 0.0))
+
         def _resample_and_jitter():
             resampled = particle_set.systematic_resample(resample_key)
             eps = jax.random.normal(jitter_key, (n, d))
-            jittered = env.state_array(resampled.particles).reshape(n, -1) + h * eps @ chol.T
+            base = env.state_array(resampled.particles).reshape(n, -1)
+            jittered = mean + shrink * (base - mean) + h * eps @ chol.T
             particles = env.replace_state_array(
                 resampled.particles, env.constrain(jittered.reshape(parts.shape))
             )
