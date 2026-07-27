@@ -4,9 +4,10 @@ from jax import Array
 
 
 def _pairwise_sq_dists(x: Array, y: Array) -> Array:
-    """Squared Euclidean distance matrix between rows of ``x`` (m, d) and ``y`` (n, d)."""
-    diff = x[:, None, :] - y[None, :, :]
-    return jnp.sum(diff * diff, axis=-1)
+    x2 = jnp.sum(x * x, axis=-1)
+    y2 = jnp.sum(y * y, axis=-1)
+    d2 = x2[:, None] + y2[None, :] - 2.0 * jnp.matmul(x, y.T, precision='highest')
+    return jnp.maximum(d2, 0.0)
 
 
 def rbf_kernel(sigma: float):

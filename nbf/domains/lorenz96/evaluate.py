@@ -18,7 +18,12 @@ from nbf.eval.dispatch import (  # noqa: E402
     NUM_REF_SAMPLES,
     compute_method_samples,
 )
-from nbf.eval.metrics import aggregate_mean_sem, mmd2_multibw_per_step_batch  # noqa: E402
+from nbf.eval.metrics import (  # noqa: E402
+    aggregate_mean_sem,
+    mmd2_multibw_per_step_chunked,
+)
+
+DEFAULT_CHUNK_SIZE = 4
 
 
 def _parse_args():
@@ -29,6 +34,7 @@ def _parse_args():
     parser.add_argument('--episode_length', type=int, default=0)
     parser.add_argument('--methods', type=str, default='nbf_1024,pf_8192')
     parser.add_argument('--seed', type=int, default=0)
+    parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
     return parser.parse_args()
 
 
@@ -51,9 +57,19 @@ def main() -> None:
         env, episode_length, args.num_episodes, rollout_key
     )
 
-    print(f'Computing gold-SMC oracle (N={GOLD_SMC_COUNT}, exact-redraw rejuvenation) ...')
+    print(
+        f'Computing gold-SMC oracle (N={GOLD_SMC_COUNT}, exact-redraw rejuvenation), '
+        f'{args.num_episodes} episodes in chunks of {args.chunk_size or args.num_episodes} ...'
+    )
     oracle = compute_l96_gold_smc_samples(
-        env, GOLD_SMC_COUNT, NUM_REF_SAMPLES, state0_b, obs_next_b, oracle_key
+        env,
+        GOLD_SMC_COUNT,
+        NUM_REF_SAMPLES,
+        state0_b,
+        obs_next_b,
+        oracle_key,
+        chunk_size=args.chunk_size,
+        desc='gold-SMC oracle',
     )
 
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
@@ -71,8 +87,14 @@ def main() -> None:
             obs_next_b=obs_next_b,
             num_ref_samples=NUM_REF_SAMPLES,
             key=method_key,
+            chunk_size=args.chunk_size,
+            desc=f'{spec} samples',
         )
-        mmd = np.asarray(mmd2_multibw_per_step_batch(samples, oracle))
+        mmd = np.asarray(
+            mmd2_multibw_per_step_chunked(
+                samples, oracle, chunk_size=args.chunk_size, desc=f'{spec} mmd'
+            )
+        )
         mean, sem = aggregate_mean_sem(mmd)
         print(f'{spec}: mmd2_multibw = {mean:.5f} +/- {sem:.5f}')
         out[f'mmd_{spec}'] = mmd

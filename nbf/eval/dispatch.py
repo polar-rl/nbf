@@ -5,7 +5,13 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from nbf.eval.base import batch_size, parse_method_spec, split_T, time_len
+from nbf.eval.base import (
+    batch_size,
+    chunked_stream,
+    parse_method_spec,
+    split_T,
+    time_len,
+)
 from nbf.eval.metrics import DENSITY_METRIC_NAMES, density_metrics_from_logps
 from nbf.eval.samples import (
     gold_smc_reference_sample_stream_batch,
@@ -35,6 +41,9 @@ def compute_pf_reference_samples(
     obs_prev_b,
     obs_next_b,
     key: Array,
+    *,
+    chunk_size: int = 0,
+    desc: str | None = None,
 ):
     pf = ParticleFilter(num_particles=pf_count)
     N = batch_size(state0_b)
@@ -43,18 +52,14 @@ def compute_pf_reference_samples(
     reset_keys = jax.random.split(rk, N)
     step_keys_b = jax.random.split(sk, N * T).reshape(N, T, -1)
     sample_keys_b = jax.random.split(samp_k, N * T).reshape(N, T, -1)
-    return pf_reference_sample_stream_batch(
-        env,
-        pf,
-        state0_b,
-        obs0_b,
-        states_next_b,
-        obs_prev_b,
-        obs_next_b,
-        reset_keys,
-        step_keys_b,
-        sample_keys_b,
-        num_ref_samples,
+    return chunked_stream(
+        lambda *a: pf_reference_sample_stream_batch(env, pf, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (reset_keys, step_keys_b, sample_keys_b),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
     )
 
 
@@ -71,6 +76,8 @@ def compute_gold_smc_reference_samples(
     *,
     mcmc_steps: int = 4,
     mcmc_step_size: float = 0.3,
+    chunk_size: int = 0,
+    desc: str | None = None,
 ):
     pf = ParticleFilter(num_particles=pf_count)
     N = batch_size(state0_b)
@@ -80,21 +87,14 @@ def compute_gold_smc_reference_samples(
     step_keys_b = jax.random.split(sk, N * T).reshape(N, T, -1)
     rejuvenate_keys_b = jax.random.split(rej_k, N * T).reshape(N, T, -1)
     sample_keys_b = jax.random.split(samp_k, N * T).reshape(N, T, -1)
-    return gold_smc_reference_sample_stream_batch(
-        env,
-        pf,
-        state0_b,
-        obs0_b,
-        states_next_b,
-        obs_prev_b,
-        obs_next_b,
-        reset_keys,
-        step_keys_b,
-        rejuvenate_keys_b,
-        sample_keys_b,
-        num_ref_samples,
-        mcmc_steps,
-        mcmc_step_size,
+    return chunked_stream(
+        lambda *a: gold_smc_reference_sample_stream_batch(env, pf, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (reset_keys, step_keys_b, rejuvenate_keys_b, sample_keys_b),
+        (num_ref_samples, mcmc_steps, mcmc_step_size),
+        N,
+        chunk_size,
+        desc=desc,
     )
 
 
@@ -112,6 +112,8 @@ def compute_method_samples(
     key: Array,
     oracle_samples: Array | None = None,
     extra_samplers=None,
+    chunk_size: int = 0,
+    desc: str | None = None,
 ) -> Array:
     kind, n = parse_method_spec(spec)
     N = batch_size(state0_b)
@@ -129,6 +131,8 @@ def compute_method_samples(
             key,
             mcmc_steps=GOLD_SMC_MCMC_STEPS,
             mcmc_step_size=GOLD_SMC_MCMC_STEP_SIZE,
+            chunk_size=chunk_size,
+            desc=desc,
         )
     if kind == 'pf':
         return compute_pf_reference_samples(
@@ -141,22 +145,20 @@ def compute_method_samples(
             obs_prev_b,
             obs_next_b,
             key,
+            chunk_size=chunk_size,
+            desc=desc,
         )
     if kind == 'nbf':
         nbf = NeuralBayesianFilter(embedding_model, num_particles=n)
         rk, sk, samp_k = jax.random.split(key, 3)
-        return nbf_reference_sample_stream_batch(
-            env,
-            nbf,
-            state0_b,
-            obs0_b,
-            states_next_b,
-            obs_prev_b,
-            obs_next_b,
-            jax.random.split(rk, N),
-            split_T(sk, N, T),
-            split_T(samp_k, N, T),
-            num_ref_samples,
+        return chunked_stream(
+            lambda *a: nbf_reference_sample_stream_batch(env, nbf, *a),
+            (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
+            (num_ref_samples,),
+            N,
+            chunk_size,
+            desc=desc,
         )
     if extra_samplers and kind in extra_samplers:
         return extra_samplers[kind](
@@ -170,6 +172,8 @@ def compute_method_samples(
             obs_next_b=obs_next_b,
             num_ref_samples=num_ref_samples,
             key=key,
+            chunk_size=chunk_size,
+            desc=desc,
         )
     raise ValueError(f'Unknown method spec {spec!r}')
 

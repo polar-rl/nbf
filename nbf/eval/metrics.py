@@ -4,6 +4,7 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
+from nbf.eval.base import run_chunked
 from nbf.metrics import median_heuristic, mmd2_u, rbf_kernel
 
 DENSITY_METRIC_NAMES = ('log_density_score', 'nll', 'auc')
@@ -85,6 +86,21 @@ def mmd2_multibw_per_step_batch(method_samples: Array, oracle_samples: Array) ->
         return mmd2_u(m_flat, o_flat, _multibw_rbf_kernel(sigma))
 
     return jax.vmap(jax.vmap(_step))(method_samples, oracle_samples)
+
+
+def mmd2_multibw_per_step_chunked(
+    method_samples,
+    oracle_samples,
+    *,
+    chunk_size: int = 0,
+    desc: str | None = None,
+):
+    def _run(start: int, stop: int) -> Array:
+        return mmd2_multibw_per_step_batch(
+            jnp.asarray(method_samples[start:stop]), jnp.asarray(oracle_samples[start:stop])
+        )
+
+    return run_chunked(_run, method_samples.shape[0], chunk_size, desc=desc)
 
 
 @eqx.filter_jit

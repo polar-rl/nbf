@@ -4,9 +4,11 @@ import os
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 from embedex.distributions.builder import create_model
 from embedex.distributions.config import ModelConfig
 from jax import Array
+from tqdm import tqdm
 
 from nbf.config import build_dataclass
 
@@ -106,6 +108,61 @@ def rollout_episodes(env, episode_length: int, num_episodes: int, key: Array):
 
 def split_T(key: Array, N: int, T: int):
     return jax.random.split(key, N * T).reshape(N, T, -1)
+
+
+def tree_slice(tree, start: int, stop: int):
+    """Slice every leaf of ``tree`` along the leading (episode) axis."""
+    return jax.tree.map(lambda x: x[start:stop], tree)
+
+
+def chunk_bounds(n: int, chunk_size: int) -> list[tuple[int, int]]:
+    """``[(start, stop), ...]`` covering ``range(n)``; a non-positive size means one chunk."""
+    if chunk_size <= 0 or chunk_size >= n:
+        return [(0, n)]
+    return [(s, min(s + chunk_size, n)) for s in range(0, n, chunk_size)]
+
+
+def run_chunked(fn, n: int, chunk_size: int, *, desc: str | None = None):
+    """Run ``fn(start, stop)`` over leading-axis chunks and concatenate the results.
+
+    Each chunk is pulled to host memory as it completes, so peak device memory
+    scales with ``chunk_size`` rather than ``n``. A single chunk is passed straight
+    through untouched (device arrays, no host copy), which keeps the unchunked path
+    exactly as it was. ``fn`` may return any pytree of arrays.
+    """
+    bounds = chunk_bounds(n, chunk_size)
+    if len(bounds) == 1:
+        return fn(0, n)
+    outs = []
+    for start, stop in tqdm(bounds, desc=desc, unit='chunk', disable=desc is None):
+        outs.append(jax.tree.map(np.asarray, fn(start, stop)))
+    return jax.tree.map(lambda *xs: np.concatenate(xs, axis=0), *outs)
+
+
+def chunked_stream(
+    stream_fn,
+    episode_trees,
+    key_arrays,
+    tail_args,
+    n: int,
+    chunk_size: int,
+    *,
+    desc: str | None = None,
+):
+    """Chunk a ``*_stream_batch`` call over its leading episode axis.
+
+    ``stream_fn`` is invoked as ``stream_fn(*episode_trees, *key_arrays, *tail_args)``
+    with the episode trees and key arrays sliced to the current chunk. Keys are split
+    for the full batch by the caller and only sliced here, so per-episode randomness --
+    and therefore the result -- does not depend on ``chunk_size``.
+    """
+
+    def _run(start: int, stop: int):
+        trees = [tree_slice(t, start, stop) for t in episode_trees]
+        keys = [k[start:stop] for k in key_arrays]
+        return stream_fn(*trees, *keys, *tail_args)
+
+    return run_chunked(_run, n, chunk_size, desc=desc)
 
 
 def parse_csv_ks(args, attr: str, default: tuple[int, ...]) -> tuple[int, ...]:

@@ -10,7 +10,7 @@ from nbf.domains.lorenz96.env import (
     conditional_gaussian_redraw,
     rk4_window,
 )
-from nbf.eval.base import batch_size, split_T, time_len
+from nbf.eval.base import batch_size, chunked_stream, split_T, time_len
 from nbf.eval.dispatch import (
     compute_method_samples as _compute_method_samples,
 )
@@ -171,23 +171,22 @@ def _filter_sampler(make_filter):
         obs_next_b,
         num_ref_samples,
         key,
+        chunk_size=0,
+        desc=None,
         **_,
     ):
         N = batch_size(state0_b)
         T = time_len(obs_prev_b)
+        filt = make_filter(n)
         rk, sk, samp_k = jax.random.split(key, 3)
-        return pf_reference_sample_stream_batch(
-            env,
-            make_filter(n),
-            state0_b,
-            obs0_b,
-            states_next_b,
-            obs_prev_b,
-            obs_next_b,
-            jax.random.split(rk, N),
-            split_T(sk, N, T),
-            split_T(samp_k, N, T),
-            num_ref_samples,
+        return chunked_stream(
+            lambda *a: pf_reference_sample_stream_batch(env, filt, *a),
+            (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
+            (num_ref_samples,),
+            N,
+            chunk_size,
+            desc=desc,
         )
 
     return _sampler
@@ -295,16 +294,19 @@ def compute_l96_gold_smc_samples(
     state0_b,
     obs_next_b,
     key: Array,
+    *,
+    chunk_size: int = 0,
+    desc: str | None = None,
 ):
     N = batch_size(state0_b)
     T = time_len(obs_next_b)
     prior_key, step_key = jax.random.split(key)
-    return gold_smc_sample_stream_batch(
-        env,
-        state0_b,
-        obs_next_b.values,
-        jax.random.split(prior_key, N),
-        split_T(step_key, N, T),
-        pf_count,
-        num_ref_samples,
+    return chunked_stream(
+        lambda *a: gold_smc_sample_stream_batch(env, *a),
+        (state0_b, obs_next_b.values),
+        (jax.random.split(prior_key, N), split_T(step_key, N, T)),
+        (pf_count, num_ref_samples),
+        N,
+        chunk_size,
+        desc=desc,
     )

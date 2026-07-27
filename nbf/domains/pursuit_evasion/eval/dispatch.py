@@ -6,7 +6,7 @@ from nbf.domains.pursuit_evasion.eval.samples import (
     gmf_reference_sample_stream_batch,
     gmf_samples_density_stream_batch,
 )
-from nbf.eval.base import batch_size, split_T, time_len
+from nbf.eval.base import batch_size, chunked_stream, split_T, time_len
 from nbf.eval.dispatch import (
     cache_path_for,
     get_or_compute_oracle,
@@ -29,21 +29,22 @@ def _gmf_sampler(
     obs_next_b,
     num_ref_samples,
     key,
+    chunk_size=0,
+    desc=None,
     **_,
 ):
     gmf = make_pe_gmf(num_evaders=env.num_evaders, M=n)
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
     ik, samp_k = jax.random.split(key)
-    return gmf_reference_sample_stream_batch(
-        gmf,
-        env.obstacles,
-        env.policy,
-        states_next_b,
-        obs_next_b,
-        jax.random.split(ik, N),
-        split_T(samp_k, N, T),
-        num_ref_samples,
+    return chunked_stream(
+        lambda *a: gmf_reference_sample_stream_batch(gmf, env.obstacles, env.policy, *a),
+        (states_next_b, obs_next_b),
+        (jax.random.split(ik, N), split_T(samp_k, N, T)),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
     )
 
 
