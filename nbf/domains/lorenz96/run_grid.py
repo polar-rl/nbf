@@ -1,6 +1,7 @@
 import argparse
 import json
 import os
+import zlib
 
 import jax
 
@@ -80,6 +81,71 @@ def make_cell_env(data_cfg, f_bands, sigma_obs, episode_length: int) -> Lorenz96
     )
 
 
+def _atomic_savez(path: str, **arrays) -> None:
+    """Write an npz via a temp file + rename, so a killed task can't leave a torn file.
+
+    Array tasks are requeueable, and a partially written cache or shard would be
+    silently loaded by whatever runs next.
+    """
+    # The .npz suffix is required: np.savez appends it when the name lacks one,
+    # which would leave the rename pointing at a file that was never written.
+    tmp = f'{path}.tmp{os.getpid()}.npz'
+    np.savez(tmp, **arrays)
+    os.replace(tmp, path)
+
+
+def enumerate_tasks(seeds) -> list[tuple[str, str, tuple, tuple, int]]:
+    """Every (cell, subcell, f_bands, sigma_obs, seed) unit of work, in a stable order.
+
+    One task owns exactly one gold-SMC oracle, which is the expensive part -- so this
+    is the finest split that does not duplicate it.
+    """
+    tasks = []
+    for cell in sorted(CELLS):
+        for subcell, f_bands, sigma_obs in CELLS[cell]:
+            for seed in seeds:
+                tasks.append((cell, subcell, f_bands, sigma_obs, seed))
+    return tasks
+
+
+def shard_path(output_dir: str, cell: str, subcell: str, seed: int) -> str:
+    return os.path.join(output_dir, '_shards', f'{cell}__{subcell}__s{seed}.npz')
+
+
+def write_shard(path: str, cell: str, subcell: str, seed: int, per_method: dict) -> None:
+    payload = {
+        f'{spec}|{metric}': arr for spec, m in per_method.items() for metric, arr in m.items()
+    }
+    payload['_cell'] = np.asarray(cell)
+    payload['_subcell'] = np.asarray(subcell)
+    payload['_seed'] = np.asarray(seed)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _atomic_savez(path, **payload)
+
+
+def load_shards(output_dir: str) -> dict[str, dict]:
+    """Read every shard back into ``{cell: {(subcell, seed): {spec: {metric: arr}}}}``."""
+    by_cell: dict[str, dict] = {}
+    shard_dir = os.path.join(output_dir, '_shards')
+    if not os.path.isdir(shard_dir):
+        return by_cell
+    for fname in sorted(os.listdir(shard_dir)):
+        if not fname.endswith('.npz'):
+            continue
+        with np.load(os.path.join(shard_dir, fname)) as d:
+            cell = str(d['_cell'])
+            subcell = str(d['_subcell'])
+            seed = int(d['_seed'])
+            per_method: dict[str, dict] = {}
+            for key in d.files:
+                if key.startswith('_'):
+                    continue
+                spec, _, metric = key.rpartition('|')
+                per_method.setdefault(spec, {})[metric] = d[key]
+        by_cell.setdefault(cell, {})[(subcell, seed)] = per_method
+    return by_cell
+
+
 def oracle_cache_path(output_dir, cell, subcell, num_episodes, episode_length, S, seed) -> str:
     fname = f'l96_{cell}_{subcell}_N{num_episodes}_T{episode_length}_S{S}_seed{seed}.npz'
     return os.path.join(output_dir, '_oracle_cache', fname)
@@ -102,7 +168,7 @@ def get_or_compute_l96_oracle(
         desc='gold-SMC oracle',
     )
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    np.savez(cache_path, samples=np.asarray(samples))
+    _atomic_savez(cache_path, samples=np.asarray(samples))
     return samples
 
 
@@ -133,7 +199,9 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
     out = {}
     for spec in methods:
         kind, _ = parse_method_spec(spec)
-        method_key = jax.random.fold_in(key, hash(spec) % (2**31))
+        # crc32, not hash(): str hashing is salted per process, so array tasks and
+        # requeued attempts would each draw different method keys.
+        method_key = jax.random.fold_in(key, zlib.crc32(spec.encode()) % (2**31))
         density = None
         if spec == 'pf_oracle':
             samples = compute_l96_gold_smc_samples(
@@ -276,10 +344,41 @@ def write_summaries(args, cell, subcells, methods, results):
     print(f'Saved {md_path} and {tex_path}')
 
 
+def merge_cell(args, cell: str, results: dict, methods: list[str]) -> None:
+    """Reduce the shards of one cell into its npz + summary tables."""
+    out = {}
+    for (subcell, seed), per_method in results.items():
+        for spec, metrics in per_method.items():
+            for metric, arr in metrics.items():
+                out[f'{subcell}|s{seed}|{spec}|{metric}'] = arr
+    npz_path = os.path.join(args.output_dir, f'{cell}.npz')
+    _atomic_savez(npz_path, **out)
+    print(f'Saved {npz_path}')
+    write_summaries(args, cell, CELLS[cell], methods, results)
+
+
+def run_merge(args) -> None:
+    by_cell = load_shards(args.output_dir)
+    if not by_cell:
+        raise SystemExit(f'No shards found under {os.path.join(args.output_dir, "_shards")}')
+    requested = [m.strip() for m in args.methods.split(',') if m.strip()]
+    seeds = parse_seeds(args)
+    for cell in sorted(by_cell):
+        results = by_cell[cell]
+        present = {spec for per_method in results.values() for spec in per_method}
+        methods = [m for m in requested if m in present]
+        methods += sorted(present - set(methods))
+        expected = len(CELLS[cell]) * len(seeds)
+        if len(results) != expected:
+            missing = sorted({(sc, s) for sc, _, _ in CELLS[cell] for s in seeds} - set(results))
+            print(f'WARNING: {cell} has {len(results)}/{expected} shards; missing {missing}')
+        merge_cell(args, cell, results, methods)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description='L96 experiment grid runner (L1/L2/L3).')
-    parser.add_argument('cell', choices=sorted(CELLS))
-    parser.add_argument('--model_dir', type=str, required=True)
+    parser.add_argument('cell', nargs='?', choices=sorted(CELLS))
+    parser.add_argument('--model_dir', type=str, default=None)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--methods', type=str, default=DEFAULT_METHODS)
     parser.add_argument('--num_episodes', type=int, default=100)
@@ -291,8 +390,32 @@ def main() -> None:
     parser.add_argument('--num_negatives', type=int, default=NUM_NEGATIVES)
     parser.add_argument('--timing_repeats', type=int, default=1)
     parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument(
+        '--task_id',
+        type=int,
+        default=-1,
+        help='run one (cell, subcell, seed) unit from --list_tasks and write a shard',
+    )
+    parser.add_argument('--list_tasks', action='store_true')
+    parser.add_argument('--merge', action='store_true')
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
+
+    tasks = enumerate_tasks(parse_seeds(args))
+    if args.list_tasks:
+        for i, (cell, subcell, _, sigma_obs, seed) in enumerate(tasks):
+            print(f'{i}\t{cell}\t{subcell}\tsigma_obs={sigma_obs}\tseed={seed}')
+        print(f'\n{len(tasks)} tasks -> #SBATCH --array=0-{len(tasks) - 1}')
+        return
+    if args.merge:
+        run_merge(args)
+        return
+    if args.task_id < 0 and args.cell is None:
+        raise SystemExit('give a cell, or --task_id / --list_tasks / --merge')
+    if args.task_id >= len(tasks):
+        raise SystemExit(f'--task_id {args.task_id} out of range (0..{len(tasks) - 1})')
+    if args.model_dir is None:
+        raise SystemExit('--model_dir is required to run work')
 
     with open(os.path.join(args.model_dir, 'data_config.json')) as f:
         data_cfg = build_dataclass(DataConfig, json.load(f))
@@ -305,6 +428,21 @@ def main() -> None:
 
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     seeds = parse_seeds(args)
+
+    if args.task_id >= 0:
+        cell, subcell, f_bands, sigma_obs, seed = tasks[args.task_id]
+        print(
+            f'Task {args.task_id}/{len(tasks) - 1}: cell {cell} subcell {subcell} seed {seed}, '
+            f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
+        )
+        per_method = run_subcell(
+            args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_obs, methods, seed
+        )
+        path = shard_path(args.output_dir, cell, subcell, seed)
+        write_shard(path, cell, subcell, seed, per_method)
+        print(f'Saved {path}\nRun --merge once every task finishes to build {cell}.npz')
+        return
+
     subcells = CELLS[args.cell]
     print(
         f'Cell {args.cell}: {len(subcells)} subcell(s) x {len(seeds)} seed(s), '
@@ -326,16 +464,7 @@ def main() -> None:
                 seed,
             )
 
-    out = {}
-    for (subcell, seed), per_method in results.items():
-        for spec, metrics in per_method.items():
-            for metric, arr in metrics.items():
-                out[f'{subcell}|s{seed}|{spec}|{metric}'] = arr
-    npz_path = os.path.join(args.output_dir, f'{args.cell}.npz')
-    np.savez(npz_path, **out)
-    print(f'Saved {npz_path}')
-
-    write_summaries(args, args.cell, subcells, methods, results)
+    merge_cell(args, args.cell, results, methods)
 
 
 if __name__ == '__main__':
