@@ -32,12 +32,13 @@ from nbf.eval.dispatch import (  # noqa: E402
 )
 from nbf.eval.metrics import (  # noqa: E402
     aggregate_mean_sem,
-    mmd2_multibw_per_step_batch,
+    mmd2_multibw_per_step_chunked,
     rmse_per_step_batch,
 )
 from nbf.eval.timing import time_method_walltime  # noqa: E402
 
 TRAIN_SIGMA_OBS = (0.5, 1.5)
+DEFAULT_CHUNK_SIZE = 4
 
 CELLS = {
     'l1': [
@@ -84,12 +85,21 @@ def oracle_cache_path(output_dir, cell, subcell, num_episodes, episode_length, S
     return os.path.join(output_dir, '_oracle_cache', fname)
 
 
-def get_or_compute_l96_oracle(cache_path, env, state0_b, obs_next_b, num_ref_samples, key):
+def get_or_compute_l96_oracle(
+    cache_path, env, state0_b, obs_next_b, num_ref_samples, key, chunk_size=0
+):
     if os.path.exists(cache_path):
         with np.load(cache_path) as d:
             return jax.numpy.asarray(d['samples'])
     samples = compute_l96_gold_smc_samples(
-        env, GOLD_SMC_COUNT, num_ref_samples, state0_b, obs_next_b, key
+        env,
+        GOLD_SMC_COUNT,
+        num_ref_samples,
+        state0_b,
+        obs_next_b,
+        key,
+        chunk_size=chunk_size,
+        desc='gold-SMC oracle',
     )
     os.makedirs(os.path.dirname(cache_path), exist_ok=True)
     np.savez(cache_path, samples=np.asarray(samples))
@@ -113,7 +123,7 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
         seed,
     )
     oracle = get_or_compute_l96_oracle(
-        cache, env, state0_b, obs_next_b, args.num_ref_samples, oracle_key
+        cache, env, state0_b, obs_next_b, args.num_ref_samples, oracle_key, args.chunk_size
     )
     N, T = args.num_episodes, args.episode_length
     neg_pts_b = sample_l96_negatives_batch(
@@ -127,7 +137,14 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
         density = None
         if spec == 'pf_oracle':
             samples = compute_l96_gold_smc_samples(
-                env, GOLD_SMC_COUNT, args.num_ref_samples, state0_b, obs_next_b, oracle2_key
+                env,
+                GOLD_SMC_COUNT,
+                args.num_ref_samples,
+                state0_b,
+                obs_next_b,
+                oracle2_key,
+                chunk_size=args.chunk_size,
+                desc=f'{spec} samples',
             )
         elif kind in DENSITY_KINDS:
             samples, density = compute_method_samples_and_density(
@@ -143,6 +160,8 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
                 neg_pts_b=neg_pts_b,
                 num_ref_samples=args.num_ref_samples,
                 key=method_key,
+                chunk_size=args.chunk_size,
+                desc=f'{spec} samples',
             )
         else:
             samples = compute_method_samples(
@@ -156,10 +175,16 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
                 obs_next_b=obs_next_b,
                 num_ref_samples=args.num_ref_samples,
                 key=method_key,
+                chunk_size=args.chunk_size,
+                desc=f'{spec} samples',
             )
 
         res = {
-            'mmd': np.asarray(mmd2_multibw_per_step_batch(samples, oracle)),
+            'mmd': np.asarray(
+                mmd2_multibw_per_step_chunked(
+                    samples, oracle, chunk_size=args.chunk_size, desc=f'{spec} mmd'
+                )
+            ),
             'rmse': np.asarray(rmse_per_step_batch(samples, states_next_b.x)),
         }
         if density is not None:
@@ -265,6 +290,7 @@ def main() -> None:
     parser.add_argument('--num_ref_samples', type=int, default=NUM_REF_SAMPLES)
     parser.add_argument('--num_negatives', type=int, default=NUM_NEGATIVES)
     parser.add_argument('--timing_repeats', type=int, default=1)
+    parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 

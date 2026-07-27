@@ -241,47 +241,38 @@ def compute_method_samples_and_density(
     oracle_samples: Array | None = None,
     pf_bandwidth=None,
     extra_density_samplers=None,
+    chunk_size: int = 0,
+    desc: str | None = None,
 ) -> tuple[Array, dict[str, Array] | None]:
     kind, n = parse_method_spec(spec)
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
+    episode_trees = (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b)
 
     if kind == 'nbf':
         nbf = NeuralBayesianFilter(embedding_model, num_particles=n)
         rk, sk, samp_k = jax.random.split(key, 3)
-        samples, lp_pos, lp_neg = nbf_samples_density_stream_batch(
-            env,
-            nbf,
-            embedding_model,
-            state0_b,
-            obs0_b,
-            states_next_b,
-            obs_prev_b,
-            obs_next_b,
-            jax.random.split(rk, N),
-            split_T(sk, N, T),
-            split_T(samp_k, N, T),
-            neg_pts_b,
-            num_ref_samples,
+        samples, lp_pos, lp_neg = chunked_stream(
+            lambda *a: nbf_samples_density_stream_batch(env, nbf, embedding_model, *a),
+            episode_trees,
+            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+            (num_ref_samples,),
+            N,
+            chunk_size,
+            desc=desc,
         )
     elif kind == 'pf':
         bws = resolve_pf_bandwidths(pf_bandwidth, k, [n])
         pf = ParticleFilter(num_particles=n)
         rk, sk, samp_k = jax.random.split(key, 3)
-        samples, lp_pos, lp_neg = pf_samples_density_stream_batch(
-            env,
-            pf,
-            state0_b,
-            obs0_b,
-            states_next_b,
-            obs_prev_b,
-            obs_next_b,
-            jax.random.split(rk, N),
-            split_T(sk, N, T),
-            split_T(samp_k, N, T),
-            neg_pts_b,
-            num_ref_samples,
-            bws[int(n)],
+        samples, lp_pos, lp_neg = chunked_stream(
+            lambda *a: pf_samples_density_stream_batch(env, pf, *a),
+            episode_trees,
+            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+            (num_ref_samples, bws[int(n)]),
+            N,
+            chunk_size,
+            desc=desc,
         )
     elif extra_density_samplers and kind in extra_density_samplers:
         samples, lp_pos, lp_neg = extra_density_samplers[kind](
@@ -297,6 +288,8 @@ def compute_method_samples_and_density(
             neg_pts_b=neg_pts_b,
             num_ref_samples=num_ref_samples,
             key=key,
+            chunk_size=chunk_size,
+            desc=desc,
         )
     else:
         raise ValueError(f'compute_method_samples_and_density: unsupported {spec!r}')

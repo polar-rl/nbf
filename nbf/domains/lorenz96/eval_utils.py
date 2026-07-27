@@ -206,26 +206,23 @@ def _kde_density_sampler(make_filter):
         neg_pts_b,
         num_ref_samples,
         key,
+        chunk_size=0,
+        desc=None,
         **_,
     ):
         bws = resolve_pf_bandwidths(None, k, [n])
         N = batch_size(state0_b)
         T = time_len(obs_prev_b)
+        filt = make_filter(n)
         rk, sk, samp_k = jax.random.split(key, 3)
-        return pf_samples_density_stream_batch(
-            env,
-            make_filter(n),
-            state0_b,
-            obs0_b,
-            states_next_b,
-            obs_prev_b,
-            obs_next_b,
-            jax.random.split(rk, N),
-            split_T(sk, N, T),
-            split_T(samp_k, N, T),
-            neg_pts_b,
-            num_ref_samples,
-            bws[int(n)],
+        return chunked_stream(
+            lambda *a: pf_samples_density_stream_batch(env, filt, *a),
+            (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+            (num_ref_samples, bws[int(n)]),
+            N,
+            chunk_size,
+            desc=desc,
         )
 
     return _sampler
@@ -243,24 +240,22 @@ def _enkf_density_sampler(
     neg_pts_b,
     num_ref_samples,
     key,
+    chunk_size=0,
+    desc=None,
     **_,
 ):
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
+    filt = make_enkf(n)
     rk, sk, samp_k = jax.random.split(key, 3)
-    return enkf_samples_density_stream_batch(
-        env,
-        make_enkf(n),
-        state0_b,
-        obs0_b,
-        states_next_b,
-        obs_prev_b,
-        obs_next_b,
-        jax.random.split(rk, N),
-        split_T(sk, N, T),
-        split_T(samp_k, N, T),
-        neg_pts_b,
-        num_ref_samples,
+    return chunked_stream(
+        lambda *a: enkf_samples_density_stream_batch(env, filt, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
     )
 
 
