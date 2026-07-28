@@ -4,11 +4,14 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32000M
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --requeue
 #SBATCH --output=slurm-%x-%j.out
 #
-# L96 gold-SMC datagen on rorqual. Requeue-safe: generate_data skips only when
+# L96 gold-SMC datagen on rorqual. Walltime: 12h default fits hard_4m with
+# margin; the easy config is far lighter — submit it with --time=3:00:00 to
+# drop into the 3h scheduling bucket (more eligible nodes + backfill).
+# Requeue-safe: generate_data skips only when
 # norm_stats.json (written last) exists, so a preempted run regenerates.
 #
 # Required env:
