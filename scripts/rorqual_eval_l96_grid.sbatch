@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=l96-grid
 #SBATCH --account=rrg-mbowling-ad
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=60G
 #SBATCH --time=12:00:00
@@ -37,7 +37,7 @@ METHODS=${METHODS:-nbf_1024,nbf_2048,nbf_op_1024,nbf_op_2048,pf_16384,pf_reg_163
 NUM_EPISODES=${NUM_EPISODES:-100}
 SEEDS=${SEEDS:-0,1,2,3,4}
 GOLD_SMC_COUNT=${GOLD_SMC_COUNT:-200000}
-CHUNK_SIZE=${CHUNK_SIZE:-4}
+CHUNK_SIZE=${CHUNK_SIZE:-16}
 TIMING_REPEATS=${TIMING_REPEATS:-1}
 
 mkdir -p "$OUT_DIR"

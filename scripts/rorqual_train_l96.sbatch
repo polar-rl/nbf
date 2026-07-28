@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=l96-train
 #SBATCH --account=rrg-mbowling-ad
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00

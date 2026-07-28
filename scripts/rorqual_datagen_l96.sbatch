@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=l96-datagen
 #SBATCH --account=rrg-mbowling-ad
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=64G
 #SBATCH --time=24:00:00
@@ -40,8 +40,16 @@ done > "$DATA_ROOT/git-shas.txt"
 cp "$CONFIG" "$DATA_ROOT/config.yaml"
 echo "{\"job\": \"$SLURM_JOB_ID\", \"node\": \"$(hostname)\", \"name\": \"$NAME\"}" > "$DATA_ROOT/meta.json"
 
-echo "Config: $CONFIG -> $DATA_ROOT"
+# BLOCK_SIZE: scenarios per vmapped gold-SMC block. Must divide num_scenarios.
+# H100-80GB guidance: easy (2M particles) -> 20; hard_4m (4M) is already 16 in
+# its config. Unset = use the config value.
+OVERRIDES=("data_path=$DATA_ROOT/")
+if [ -n "${BLOCK_SIZE:-}" ]; then
+  OVERRIDES+=("data.block_size=$BLOCK_SIZE")
+fi
+
+echo "Config: $CONFIG -> $DATA_ROOT (overrides: ${OVERRIDES[*]})"
 $PY -m nbf.domains.lorenz96.generate_data \
     --config="$CONFIG" \
-    --set "data_path=$DATA_ROOT/"
+    --set "${OVERRIDES[@]}"
 echo DATAGEN-OK

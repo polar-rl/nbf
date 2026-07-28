@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=l96-smoke
 #SBATCH --account=rrg-mbowling-ad
-#SBATCH --gres=gpu:1
+#SBATCH --gres=gpu:h100:1
 #SBATCH --mem=16G
 #SBATCH --time=00:15:00
 #SBATCH --output=slurm-%x-%j.out
