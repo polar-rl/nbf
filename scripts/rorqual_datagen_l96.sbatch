@@ -46,13 +46,32 @@ echo "{\"job\": \"$SLURM_JOB_ID\", \"node\": \"$(hostname)\", \"name\": \"$NAME\
 # BLOCK_SIZE: scenarios per vmapped gold-SMC block. Must divide num_scenarios.
 # H100-80GB guidance: easy (2M particles) -> 20; hard_4m (4M) is already 16 in
 # its config. Unset = use the config value.
-OVERRIDES=("data_path=$DATA_ROOT/")
+#
+# Generate onto node-local NVMe, then one sequential copy to scratch at the
+# end (Lustre writeback throttling turned incremental memmap writes into the
+# bottleneck: 4s/block decayed to 23s/block on the first run). The corpus dir
+# is copied under a temp name and atomically renamed, so the norm_stats.json
+# completion guard can never see a half-copied corpus.
+LOCAL_OUT=$SLURM_TMPDIR/datagen_out
+mkdir -p "$LOCAL_OUT"
+
+OVERRIDES=("data_path=$LOCAL_OUT/")
 if [ -n "${BLOCK_SIZE:-}" ]; then
   OVERRIDES+=("data.block_size=$BLOCK_SIZE")
 fi
 
-echo "Config: $CONFIG -> $DATA_ROOT (overrides: ${OVERRIDES[*]})"
+echo "Config: $CONFIG -> $LOCAL_OUT (overrides: ${OVERRIDES[*]})"
 $PY -m nbf.domains.lorenz96.generate_data \
     --config="$CONFIG" \
     --set "${OVERRIDES[@]}"
+
+CORPUS_DIR=$(basename "$(find "$LOCAL_OUT" -maxdepth 1 -mindepth 1 -type d | head -1)")
+[ -f "$LOCAL_OUT/$CORPUS_DIR/norm_stats.json" ] || { echo "FATAL: generation incomplete"; exit 1; }
+echo "Copying $LOCAL_OUT/$CORPUS_DIR -> $DATA_ROOT/$CORPUS_DIR ..."
+SECONDS=0
+rm -rf "$DATA_ROOT/$CORPUS_DIR.tmp"
+cp -r "$LOCAL_OUT/$CORPUS_DIR" "$DATA_ROOT/$CORPUS_DIR.tmp"
+rm -rf "$DATA_ROOT/$CORPUS_DIR"
+mv "$DATA_ROOT/$CORPUS_DIR.tmp" "$DATA_ROOT/$CORPUS_DIR"
+echo "Copied in ${SECONDS}s."
 echo DATAGEN-OK
