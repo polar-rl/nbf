@@ -19,7 +19,7 @@ model:
     fm_sigma_min: 1e-4
 
 training:
-  num_iterations: 250000
+  num_iterations: 100000
   learning_rate: 1.0e-4
   end_learning_rate: 1.0e-6
   warmup_steps: 5000

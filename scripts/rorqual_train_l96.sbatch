@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=48000M
-#SBATCH --time=24:00:00
+#SBATCH --time=12:00:00
 #SBATCH --requeue
 #SBATCH --output=slurm-%x-%j.out
 #
@@ -18,6 +18,10 @@
 # Optional env:
 #   DATA_ROOT  default $SCRATCH/nbf/l96/<config-name>/data
 #   SAVE_ROOT  default $SCRATCH/nbf/l96/<config-name>/results
+#   ITERS      override training.num_iterations (re-scales the cosine schedule
+#              to the shorter horizon — a complete decay, not a truncated one)
+#   NUM_SAMPLES  override training.num_samples (per-batch encoder set size;
+#              stored corpus rows are unaffected)
 set -euo pipefail
 : "${SLURM_TMPDIR:?SLURM_TMPDIR unset}"
 : "${CONFIG:?set CONFIG to a repo-relative yaml path}"
@@ -51,10 +55,18 @@ for r in nbf embedex; do
 done > "$SAVE_ROOT/git-shas.txt"
 echo "{\"job\": \"$SLURM_JOB_ID\", \"node\": \"$(hostname)\", \"name\": \"$NAME\"}" > "$SAVE_ROOT/meta.json"
 
-echo "Config: $CONFIG  data: $SLURM_TMPDIR/data/  save: $SAVE_ROOT"
+OVERRIDES=("data_path=$SLURM_TMPDIR/data/" "save_path=$SAVE_ROOT/")
+if [ -n "${ITERS:-}" ]; then
+  OVERRIDES+=("training.num_iterations=$ITERS")
+fi
+if [ -n "${NUM_SAMPLES:-}" ]; then
+  OVERRIDES+=("training.num_samples=$NUM_SAMPLES")
+fi
+
+echo "Config: $CONFIG  data: $SLURM_TMPDIR/data/  save: $SAVE_ROOT  overrides: ${OVERRIDES[*]}"
 $PY -m nbf.domains.lorenz96.train \
     --config="$CONFIG" \
-    --set "data_path=$SLURM_TMPDIR/data/" "save_path=$SAVE_ROOT/"
+    --set "${OVERRIDES[@]}"
 
 # Promote the checkpoint off scratch (60-day purge) to backed-up project space.
 PROMOTE=$BASE/results/nbf-l96/$NAME
