@@ -5,7 +5,10 @@ import zlib
 
 import jax
 
-jax.config.update('jax_enable_x64', True)
+# Eval runs in float32: the model weights are f32, f32 log-probs match f64 to
+# <1e-4 nats, and x64 is a ~2.4x CPU / up-to-64x consumer-GPU slowdown on the
+# network calls. The gold-SMC oracle also runs f32 (accepted 2026-07-27); oracle
+# caches written under x64 do not match f32 rollouts -- clear _oracle_cache.
 
 import numpy as np  # noqa: E402
 
@@ -21,6 +24,7 @@ from nbf.domains.lorenz96.eval_utils import (  # noqa: E402
 )
 from nbf.eval._tex import fmt_val, latex_escape  # noqa: E402
 from nbf.eval.base import (  # noqa: E402
+    cast_velocity_net_bf16,
     load_embedding_model,
     parse_method_spec,
     parse_seeds,
@@ -172,7 +176,9 @@ def get_or_compute_l96_oracle(
     return samples
 
 
-def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_obs, methods, seed):
+def run_subcell(
+    args, data_cfg, sampling_model, density_model, cell, subcell, f_bands, sigma_obs, methods, seed
+):
     env = make_cell_env(data_cfg, f_bands, sigma_obs, args.episode_length)
     key = jax.random.PRNGKey(seed)
     rollout_key, oracle_key, oracle2_key, neg_key = jax.random.split(key, 4)
@@ -218,7 +224,8 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
             samples, density = compute_method_samples_and_density(
                 spec,
                 env=env,
-                embedding_model=embedding_model,
+                embedding_model=sampling_model,
+                density_model=density_model,
                 k=data_cfg.K,
                 state0_b=state0_b,
                 obs0_b=obs0_b,
@@ -235,7 +242,7 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
             samples = compute_method_samples(
                 spec,
                 env=env,
-                embedding_model=embedding_model,
+                embedding_model=sampling_model,
                 state0_b=state0_b,
                 obs0_b=obs0_b,
                 states_next_b=states_next_b,
@@ -261,7 +268,7 @@ def run_subcell(args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_o
             timing = time_method_walltime(
                 spec,
                 env=env,
-                embedding_model=embedding_model,
+                embedding_model=sampling_model,
                 state0_b=state0_b,
                 obs0_b=obs0_b,
                 states_next_b=states_next_b,
@@ -388,8 +395,20 @@ def main() -> None:
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num_ref_samples', type=int, default=NUM_REF_SAMPLES)
     parser.add_argument('--num_negatives', type=int, default=NUM_NEGATIVES)
-    parser.add_argument('--timing_repeats', type=int, default=1)
+    parser.add_argument('--timing_repeats', type=int, default=0)
     parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument(
+        '--fm_num_steps',
+        type=int,
+        default=0,
+        help='override flow ODE steps for the sampling/filter path only '
+        '(0 = keep model config; log_prob for LDS/NLL/AUC always uses the config value)',
+    )
+    parser.add_argument(
+        '--bf16_sampling',
+        action='store_true',
+        help='cast the sampling velocity net to bf16 (GPU; log_prob stays f32)',
+    )
     parser.add_argument(
         '--task_id',
         type=int,
@@ -423,8 +442,20 @@ def main() -> None:
         raise ValueError('model_dir data_config.json lacks norm stats; retrain or fix the file')
     args.episode_length = args.episode_length or data_cfg.episode_length
 
-    embedding_model, _ = load_embedding_model(args.model_dir, jax.random.PRNGKey(0))
-    print(f'Loaded embedding model from {args.model_dir}')
+    density_model, _ = load_embedding_model(args.model_dir, jax.random.PRNGKey(0))
+    if args.fm_num_steps:
+        sampling_model, _ = load_embedding_model(
+            args.model_dir, jax.random.PRNGKey(0), fm_num_steps=args.fm_num_steps
+        )
+    else:
+        sampling_model = density_model
+    if args.bf16_sampling:
+        sampling_model = cast_velocity_net_bf16(sampling_model)
+    print(
+        f'Loaded embedding model from {args.model_dir} '
+        f'(sampling: fm_num_steps={args.fm_num_steps or "config"}, '
+        f'bf16={args.bf16_sampling})'
+    )
 
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     seeds = parse_seeds(args)
@@ -436,7 +467,16 @@ def main() -> None:
             f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
         )
         per_method = run_subcell(
-            args, data_cfg, embedding_model, cell, subcell, f_bands, sigma_obs, methods, seed
+            args,
+            data_cfg,
+            sampling_model,
+            density_model,
+            cell,
+            subcell,
+            f_bands,
+            sigma_obs,
+            methods,
+            seed,
         )
         path = shard_path(args.output_dir, cell, subcell, seed)
         write_shard(path, cell, subcell, seed, per_method)
@@ -455,7 +495,8 @@ def main() -> None:
             results[(subcell, seed)] = run_subcell(
                 args,
                 data_cfg,
-                embedding_model,
+                sampling_model,
+                density_model,
                 args.cell,
                 subcell,
                 f_bands,

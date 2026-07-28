@@ -66,12 +66,14 @@ def parse_seeds(args) -> list[int]:
     return [base]
 
 
-def load_embedding_model(model_dir, key):
+def load_embedding_model(model_dir, key, fm_num_steps: int | None = None):
     config_path = os.path.join(model_dir, 'model_config.json')
     model_path = os.path.join(model_dir, 'model.eqx')
 
     with open(config_path) as f:
         mcfg = json.load(f)
+    if fm_num_steps:
+        mcfg['generator']['fm_num_steps'] = int(fm_num_steps)
 
     model_cfg = build_dataclass(ModelConfig, mcfg)
     model = create_model(model_cfg, dequantize=False, key=key)
@@ -86,6 +88,14 @@ def load_embedding_model(model_dir, key):
     with open(model_path, 'rb') as f:
         model = eqx.tree_deserialise_leaves(f, model)
     return model, model_cfg
+
+
+def cast_velocity_net_bf16(model):
+    vnet = model.generator.velocity_net
+    vnet16 = jax.tree.map(
+        lambda x: x.astype(jnp.bfloat16) if eqx.is_inexact_array(x) else x, vnet
+    )
+    return eqx.tree_at(lambda m: m.generator.velocity_net, model, vnet16)
 
 
 def parse_method_spec(spec: str) -> tuple[str, int]:

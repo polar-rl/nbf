@@ -4,15 +4,17 @@ import os
 
 import jax
 
-jax.config.update('jax_enable_x64', True)
-
 import numpy as np  # noqa: E402
 
 from nbf.config import build_dataclass  # noqa: E402
 from nbf.domains.lorenz96.config import DataConfig  # noqa: E402
 from nbf.domains.lorenz96.env import build_lorenz96_env  # noqa: E402
 from nbf.domains.lorenz96.eval_utils import compute_l96_gold_smc_samples  # noqa: E402
-from nbf.eval.base import load_embedding_model, rollout_episodes  # noqa: E402
+from nbf.eval.base import (  # noqa: E402
+    cast_velocity_net_bf16,
+    load_embedding_model,
+    rollout_episodes,
+)
 from nbf.eval.dispatch import (  # noqa: E402
     GOLD_SMC_COUNT,
     NUM_REF_SAMPLES,
@@ -35,6 +37,17 @@ def _parse_args():
     parser.add_argument('--methods', type=str, default='nbf_1024,pf_8192')
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument(
+        '--fm_num_steps',
+        type=int,
+        default=0,
+        help='override flow ODE steps for sampling (0 = keep model config)',
+    )
+    parser.add_argument(
+        '--bf16_sampling',
+        action='store_true',
+        help='cast the sampling velocity net to bf16 (GPU)',
+    )
     return parser.parse_args()
 
 
@@ -49,8 +62,15 @@ def main() -> None:
 
     key = jax.random.PRNGKey(args.seed)
     key, model_key = jax.random.split(key)
-    embedding_model, _ = load_embedding_model(args.model_dir, model_key)
-    print(f'Loaded embedding model from {args.model_dir}')
+    embedding_model, _ = load_embedding_model(
+        args.model_dir, model_key, fm_num_steps=args.fm_num_steps or None
+    )
+    if args.bf16_sampling:
+        embedding_model = cast_velocity_net_bf16(embedding_model)
+    print(
+        f'Loaded embedding model from {args.model_dir} '
+        f'(fm_num_steps={args.fm_num_steps or "config"}, bf16={args.bf16_sampling})'
+    )
 
     key, rollout_key, oracle_key = jax.random.split(key, 3)
     state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = rollout_episodes(

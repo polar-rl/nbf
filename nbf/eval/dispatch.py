@@ -243,6 +243,7 @@ def compute_method_samples_and_density(
     extra_density_samplers=None,
     chunk_size: int = 0,
     desc: str | None = None,
+    density_model=None,
 ) -> tuple[Array, dict[str, Array] | None]:
     kind, n = parse_method_spec(spec)
     N = batch_size(state0_b)
@@ -250,10 +251,11 @@ def compute_method_samples_and_density(
     episode_trees = (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b)
 
     if kind == 'nbf':
+        dmodel = density_model if density_model is not None else embedding_model
         nbf = NeuralBayesianFilter(embedding_model, num_particles=n)
         rk, sk, samp_k = jax.random.split(key, 3)
         samples, lp_pos, lp_neg = chunked_stream(
-            lambda *a: nbf_samples_density_stream_batch(env, nbf, embedding_model, *a),
+            lambda *a: nbf_samples_density_stream_batch(env, nbf, dmodel, *a),
             episode_trees,
             (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
             (num_ref_samples,),
