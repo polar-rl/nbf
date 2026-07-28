@@ -9,7 +9,6 @@ import jax
 # <1e-4 nats, and x64 is a ~2.4x CPU / up-to-64x consumer-GPU slowdown on the
 # network calls. The gold-SMC oracle also runs f32 (accepted 2026-07-27); oracle
 # caches written under x64 do not match f32 rollouts -- clear _oracle_cache.
-
 import numpy as np  # noqa: E402
 
 from nbf.config import build_dataclass  # noqa: E402
@@ -282,8 +281,8 @@ def run_subcell(
             )
             res['walltime_s'] = np.asarray(timing['mean_s'])
         out[spec] = res
-        mmd_mean, mmd_sem = aggregate_mean_sem(res['mmd'])
-        rmse_mean, _ = aggregate_mean_sem(res['rmse'])
+        mmd_mean, mmd_sem = aggregate_mean_sem(res['mmd'][:, args.t_min :])
+        rmse_mean, _ = aggregate_mean_sem(res['rmse'][:, args.t_min :])
         print(
             f'  [{cell}/{subcell} seed {seed}] {spec}: '
             f'mmd2={mmd_mean:.5f}+/-{mmd_sem:.5f} rmse={rmse_mean:.3f}'
@@ -305,7 +304,7 @@ def _pool(results, subcell, spec, metric):
 
 
 def write_summaries(args, cell, subcells, methods, results):
-    md_lines = [f'# L96 grid cell {cell.upper()}', '']
+    md_lines = [f'# L96 grid cell {cell.upper()} (t>={args.t_min})', '']
     tex_lines = []
     for subcell, _, sigma_obs in subcells:
         md_lines += [
@@ -329,7 +328,7 @@ def write_summaries(args, cell, subcells, methods, results):
                 elif metric == 'walltime_s':
                     row[metric] = float(np.mean(pooled)), float('nan')
                 else:
-                    row[metric] = aggregate_mean_sem(pooled)
+                    row[metric] = aggregate_mean_sem(pooled[:, args.t_min :])
             cells = [
                 f'{fmt_val(row["mmd"][0])} ± {fmt_val(row["mmd"][1])}',
                 fmt_val(row['log_density_score'][0]),
@@ -397,6 +396,13 @@ def main() -> None:
     parser.add_argument('--num_negatives', type=int, default=NUM_NEGATIVES)
     parser.add_argument('--timing_repeats', type=int, default=0)
     parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
+    parser.add_argument(
+        '--t_min',
+        type=int,
+        default=0,
+        help='drop the first t_min steps (reference-noise-limited) from summaries and prints; '
+        'shards always store full per-step arrays, so this can be applied at --merge time',
+    )
     parser.add_argument(
         '--fm_num_steps',
         type=int,
