@@ -1,14 +1,11 @@
 import argparse
+import dataclasses
 import json
 import os
 import zlib
 
 import jax
 
-# Eval runs in float32: the model weights are f32, f32 log-probs match f64 to
-# <1e-4 nats, and x64 is a ~2.4x CPU / up-to-64x consumer-GPU slowdown on the
-# network calls. The gold-SMC oracle also runs f32 (accepted 2026-07-27); oracle
-# caches written under x64 do not match f32 rollouts -- clear _oracle_cache.
 import numpy as np  # noqa: E402
 
 from nbf.config import build_dataclass  # noqa: E402
@@ -42,15 +39,16 @@ from nbf.eval.metrics import (  # noqa: E402
 from nbf.eval.timing import time_method_walltime  # noqa: E402
 
 TRAIN_SIGMA_OBS = (0.5, 1.5)
+EVAL_SIGMA_OBS = (1.0, 1.0)
 DEFAULT_CHUNK_SIZE = 4
 
 CELLS = {
     'l1': [
-        ('f6', ((6.0, 6.0),), TRAIN_SIGMA_OBS),
-        ('f10', ((10.0, 10.0),), TRAIN_SIGMA_OBS),
+        ('f6', ((6.0, 6.0),), EVAL_SIGMA_OBS),
+        ('f10', ((10.0, 10.0),), EVAL_SIGMA_OBS),
     ],
     'l2': [
-        ('f8', ((8.0, 8.0),), TRAIN_SIGMA_OBS),
+        ('f8', ((8.0, 8.0),), EVAL_SIGMA_OBS),
     ],
     'l3': [(f'f8_s{s}', ((8.0, 8.0),), (s, s)) for s in (0.25, 0.5, 1.0, 1.5, 2.0, 3.0)],
 }
@@ -98,11 +96,6 @@ def _atomic_savez(path: str, **arrays) -> None:
 
 
 def enumerate_tasks(seeds) -> list[tuple[str, str, tuple, tuple, int]]:
-    """Every (cell, subcell, f_bands, sigma_obs, seed) unit of work, in a stable order.
-
-    One task owns exactly one gold-SMC oracle, which is the expensive part -- so this
-    is the finest split that does not duplicate it.
-    """
     tasks = []
     for cell in sorted(CELLS):
         for subcell, f_bands, sigma_obs in CELLS[cell]:
@@ -149,8 +142,14 @@ def load_shards(output_dir: str) -> dict[str, dict]:
     return by_cell
 
 
-def oracle_cache_path(output_dir, cell, subcell, num_episodes, episode_length, S, seed) -> str:
-    fname = f'l96_{cell}_{subcell}_N{num_episodes}_T{episode_length}_S{S}_seed{seed}.npz'
+def oracle_cache_path(
+    output_dir, cell, subcell, num_episodes, episode_length, S, seed, substeps, sigma_obs
+) -> str:
+    sig = f'{sigma_obs[0]:g}-{sigma_obs[1]:g}'
+    fname = (
+        f'l96_{cell}_{subcell}_N{num_episodes}_T{episode_length}_S{S}'
+        f'_sub{substeps}_sig{sig}_seed{seed}.npz'
+    )
     return os.path.join(output_dir, '_oracle_cache', fname)
 
 
@@ -192,6 +191,8 @@ def run_subcell(
         args.episode_length,
         args.num_ref_samples,
         seed,
+        data_cfg.window_substeps,
+        sigma_obs,
     )
     oracle = get_or_compute_l96_oracle(
         cache, env, state0_b, obs_next_b, args.num_ref_samples, oracle_key, args.chunk_size
@@ -421,6 +422,19 @@ def main() -> None:
         default=-1,
         help='run one (cell, subcell, seed) unit from --list_tasks and write a shard',
     )
+    parser.add_argument(
+        '--substeps',
+        type=int,
+        default=0,
+        help='override window_substeps (assimilation window = substeps * dt); '
+        '0 = keep the model/config value. Regime-screen knob.',
+    )
+    parser.add_argument(
+        '--sigma_obs',
+        type=float,
+        default=None,
+        help='pin eval sigma_obs to this value for every cell, overriding CELLS.',
+    )
     parser.add_argument('--list_tasks', action='store_true')
     parser.add_argument('--merge', action='store_true')
     args = parser.parse_args()
@@ -439,35 +453,46 @@ def main() -> None:
         raise SystemExit('give a cell, or --task_id / --list_tasks / --merge')
     if args.task_id >= len(tasks):
         raise SystemExit(f'--task_id {args.task_id} out of range (0..{len(tasks) - 1})')
-    if args.model_dir is None:
-        raise SystemExit('--model_dir is required to run work')
-
-    with open(os.path.join(args.model_dir, 'data_config.json')) as f:
-        data_cfg = build_dataclass(DataConfig, json.load(f))
-    if data_cfg.norm_mean is None or data_cfg.norm_std is None:
-        raise ValueError('model_dir data_config.json lacks norm stats; retrain or fix the file')
-    args.episode_length = args.episode_length or data_cfg.episode_length
-
-    density_model, _ = load_embedding_model(args.model_dir, jax.random.PRNGKey(0))
-    if args.fm_num_steps:
-        sampling_model, _ = load_embedding_model(
-            args.model_dir, jax.random.PRNGKey(0), fm_num_steps=args.fm_num_steps
-        )
-    else:
-        sampling_model = density_model
-    if args.bf16_sampling:
-        sampling_model = cast_velocity_net_bf16(sampling_model)
-    print(
-        f'Loaded embedding model from {args.model_dir} '
-        f'(sampling: fm_num_steps={args.fm_num_steps or "config"}, '
-        f'bf16={args.bf16_sampling})'
-    )
-
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     seeds = parse_seeds(args)
 
+    if args.model_dir is None:
+        needs_model = [m for m in methods if parse_method_spec(m)[0] == 'nbf']
+        if needs_model:
+            raise SystemExit(f'--model_dir is required for methods {needs_model}')
+        data_cfg = DataConfig(norm_mean=0.0, norm_std=1.0)
+        sampling_model = density_model = None
+        print('Methods-only mode: no model, DataConfig defaults')
+    else:
+        with open(os.path.join(args.model_dir, 'data_config.json')) as f:
+            data_cfg = build_dataclass(DataConfig, json.load(f))
+        if data_cfg.norm_mean is None or data_cfg.norm_std is None:
+            raise ValueError('model_dir data_config.json lacks norm stats; retrain or fix the file')
+
+        density_model, _ = load_embedding_model(args.model_dir, jax.random.PRNGKey(0))
+        if args.fm_num_steps:
+            sampling_model, _ = load_embedding_model(
+                args.model_dir, jax.random.PRNGKey(0), fm_num_steps=args.fm_num_steps
+            )
+        else:
+            sampling_model = density_model
+        if args.bf16_sampling:
+            sampling_model = cast_velocity_net_bf16(sampling_model)
+        print(
+            f'Loaded embedding model from {args.model_dir} '
+            f'(sampling: fm_num_steps={args.fm_num_steps or "config"}, '
+            f'bf16={args.bf16_sampling})'
+        )
+
+    if args.substeps:
+        data_cfg = dataclasses.replace(data_cfg, window_substeps=args.substeps)
+        print(f'Window override: substeps={args.substeps} (window={args.substeps * data_cfg.dt:g})')
+    args.episode_length = args.episode_length or data_cfg.episode_length
+
     if args.task_id >= 0:
         cell, subcell, f_bands, sigma_obs, seed = tasks[args.task_id]
+        if args.sigma_obs is not None:
+            sigma_obs = (args.sigma_obs, args.sigma_obs)
         print(
             f'Task {args.task_id}/{len(tasks) - 1}: cell {cell} subcell {subcell} seed {seed}, '
             f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
@@ -490,6 +515,8 @@ def main() -> None:
         return
 
     subcells = CELLS[args.cell]
+    if args.sigma_obs is not None:
+        subcells = [(sc, fb, (args.sigma_obs, args.sigma_obs)) for sc, fb, _ in subcells]
     print(
         f'Cell {args.cell}: {len(subcells)} subcell(s) x {len(seeds)} seed(s), '
         f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'

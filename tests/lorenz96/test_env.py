@@ -15,7 +15,7 @@ from nbf.domains.lorenz96.env import (
     rk4_window,
     rw_mh_redraw,
 )
-from nbf.filters.particle import ParticleFilter
+from nbf.filters.particle import ParticleFilter, ParticleSet, RegularizedParticleFilter
 
 
 @pytest.fixture
@@ -159,6 +159,26 @@ class TestObservationWeights:
         w, _ = env.observation_weights(particles, None, ts.observation)
         assert np.allclose(w, np.ones(16) / 16)
 
+    def test_nonfinite_particle_gets_zero_weight(self, env, key):
+        state, _ = env.reset(key)
+        particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 16))
+        x = particles.x.at[3].set(jnp.nan).at[7].set(jnp.inf)
+        particles = env.replace_state_array(particles, x)
+        gold = Lorenz96Observation(values=state.x[1::2] + 0.1, sigma_obs=state.sigma_obs)
+        w, _ = env.observation_weights(particles, None, gold)
+        w = np.asarray(w)
+        assert np.all(np.isfinite(w))
+        assert w[3] == 0.0 and w[7] == 0.0
+        assert np.isclose(w.sum(), 1.0, atol=1e-5)
+
+    def test_uniform_when_all_particles_nonfinite(self, env, key):
+        state, _ = env.reset(key)
+        particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 16))
+        particles = env.replace_state_array(particles, jnp.full_like(particles.x, jnp.nan))
+        gold = Lorenz96Observation(values=state.x[1::2], sigma_obs=state.sigma_obs)
+        w, _ = env.observation_weights(particles, None, gold)
+        assert np.allclose(np.asarray(w), np.ones(16) / 16)
+
     def test_matches_analytic_softmax(self, env, key):
         state, _ = env.reset(key)
         particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 32))
@@ -276,3 +296,32 @@ class TestRejuvenation:
         )
         assert np.allclose(exact.mean(axis=0), mh.mean(axis=0), atol=0.05)
         assert np.allclose(exact.std(axis=0), mh.std(axis=0), atol=0.05)
+
+
+class TestPfRegNanRobustness:
+    def test_nan_particle_does_not_poison_update(self, env, key):
+        state, ts = env.reset(key)
+        pf = RegularizedParticleFilter(num_particles=64, resample_factor=2.0)
+        pset = pf.reset(env, state, ts.observation, key)
+        x = pset.particles.x.at[0].set(jnp.nan).at[1].set(jnp.inf)
+        pset = ParticleSet(env.replace_state_array(pset.particles, x), pset.weights)
+        step_key, update_key = jax.random.split(key)
+        _, ts2 = env.step(state, 0, step_key)
+        pset2, neff, _, _ = pf.update(
+            env, pset, state, ts.observation, 0, ts2.observation, update_key
+        )
+        assert np.all(np.isfinite(np.asarray(pset2.weights)))
+        assert np.all(np.isfinite(np.asarray(pset2.particles.x)))
+        assert float(neff) > 0.0
+
+    def test_collapsed_weights_do_not_poison_jitter(self, env, key):
+        state, ts = env.reset(key)
+        pf = RegularizedParticleFilter(num_particles=256, resample_factor=2.0)
+        pset = pf.reset(env, state, ts.observation, key)
+        wkey, step_key, update_key = jax.random.split(key, 3)
+        w = jax.nn.softmax(1e4 * jax.random.normal(wkey, (256,)))
+        pset = ParticleSet(pset.particles, w)
+        next_state, ts2 = env.step(state, 0, step_key)
+        pset2, _, _, _ = pf.update(env, pset, state, ts.observation, 0, ts2.observation, update_key)
+        assert np.all(np.isfinite(np.asarray(pset2.particles.x)))
+        assert np.all(np.isfinite(np.asarray(pset2.weights)))

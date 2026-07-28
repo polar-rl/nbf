@@ -66,11 +66,15 @@ def scenario_block(
             y = x_true[obs_idx] + sigma_obs * jax.random.normal(obs_key, (env.num_obs,))
 
             means = rk4_window(parts, forcing, env.dt, env.substeps, env.linear)
-            parts = means + env.sigma_dyn * jax.random.normal(prop_key, parts.shape)
-            log_w = -0.5 * jnp.sum(((parts[:, obs_idx] - y) / sigma_obs) ** 2, axis=-1)
+            marg_var = env.sigma_dyn**2 + sigma_obs**2
+            log_w = -0.5 * jnp.sum((means[:, obs_idx] - y) ** 2, axis=-1) / marg_var
             w = jax.nn.softmax(log_w)
 
-            ps, ws = _subsample(parts, w, sub_key)
+            sub_idx = jax.random.choice(sub_key, num_pf_particles, (num_samples,), replace=False)
+            ps = conditional_gaussian_redraw(
+                means[sub_idx], y, obs_idx, env.sigma_dyn, sigma_obs, prop_key
+            )
+            ws = w[sub_idx] / (jnp.sum(w[sub_idx]) + 1e-30)
 
             idx = systematic_indices(w, res_key)
             parts = conditional_gaussian_redraw(

@@ -23,9 +23,10 @@ def _pf_density_step(env, particle_set, x_true: Array, x_neg: Array, bandwidth: 
     log_w = jnp.log(particle_set.weights / (jnp.sum(particle_set.weights) + 1e-30) + 1e-30)
     h2 = bandwidth * bandwidth
 
-    def kde_logp(x):  # x: (*state_shape,)
+    def kde_logp(x):
         diff = parts_flat - x.reshape(-1)[None]  # (P, D)
         sq = jnp.sum(diff * diff, axis=-1)
+        sq = jnp.where(jnp.isfinite(sq), sq, jnp.inf)
         return jax.scipy.special.logsumexp(log_w - 0.5 * sq / h2)
 
     pts = jnp.concatenate([x_true[None], x_neg], axis=0)

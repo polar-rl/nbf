@@ -65,8 +65,8 @@ def e3_stream_batch(
             regen_samps = gen * env.norm_std + env.norm_mean
 
             means = rk4_window(parts, forcing, env.dt, env.substeps, env.linear)
-            parts = means + env.sigma_dyn * jax.random.normal(prop_key, parts.shape)
-            log_w = -0.5 * jnp.sum(((parts[:, obs_idx] - y) / sigma_obs) ** 2, axis=-1)
+            marg_var = env.sigma_dyn**2 + sigma_obs**2
+            log_w = -0.5 * jnp.sum((means[:, obs_idx] - y) ** 2, axis=-1) / marg_var
             w = jax.nn.softmax(log_w)
             idx = systematic_indices(w, res_key)
             parts = conditional_gaussian_redraw(

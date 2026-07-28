@@ -248,9 +248,11 @@ class Lorenz96Env(eqx.Module):
             ** 2,
             axis=-1,
         )
+        finite = jnp.isfinite(log_likes)
+        log_likes = jnp.where(finite, log_likes, -jnp.inf)
         n = particles.x.shape[0]
         weights = jax.lax.cond(
-            has_obs,
+            has_obs & jnp.any(finite),
             lambda: jax.nn.softmax(log_likes),
             lambda: jnp.ones(n) / n,
         )

@@ -231,11 +231,16 @@ class RegularizedParticleFilter(ParticleFilter):
         parts = env.state_array(particle_set.particles)
         flat = parts.reshape(parts.shape[0], -1)
         n, d = flat.shape
-        w = particle_set.weights / (jnp.sum(particle_set.weights) + 1e-30)
-        mean = jnp.sum(w[:, None] * flat, axis=0)
-        diff = flat - mean
-        cov = (w[:, None] * diff).T @ diff
-        chol = jnp.linalg.cholesky(cov + 1e-8 * jnp.eye(d))
+        ok = jnp.all(jnp.isfinite(flat), axis=-1)
+        w = particle_set.weights * ok
+        w = w / (jnp.sum(w) + 1e-30)
+        safe = jnp.where(ok[:, None], flat, 0.0)
+        mean = jnp.sum(w[:, None] * safe, axis=0)
+        diff = jnp.where(ok[:, None], safe - mean, 0.0)
+        cov = jnp.matmul((w[:, None] * diff).T, diff, precision='highest')
+        cov = 0.5 * (cov + cov.T)
+        eigvals, eigvecs = jnp.linalg.eigh(cov)
+        chol = eigvecs * jnp.sqrt(jnp.clip(eigvals, min=0.0))[None, :]
         h = self.bandwidth_scale * (4.0 / (n * (d + 2.0))) ** (1.0 / (d + 4.0))
 
         shrink = jnp.sqrt(jnp.maximum(1.0 - h * h, 0.0))
