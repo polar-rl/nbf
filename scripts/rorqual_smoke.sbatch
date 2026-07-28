@@ -2,7 +2,7 @@
 #SBATCH --job-name=l96-smoke
 #SBATCH --account=rrg-mbowling-ad
 #SBATCH --gres=gpu:h100:1
-#SBATCH --mem=16G
+#SBATCH --mem=8000M
 #SBATCH --time=00:15:00
 #SBATCH --output=slurm-%x-%j.out
 #

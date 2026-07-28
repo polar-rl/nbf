@@ -3,7 +3,7 @@
 #SBATCH --account=rrg-mbowling-ad
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=64G
+#SBATCH --mem=32000M
 #SBATCH --time=24:00:00
 #SBATCH --requeue
 #SBATCH --output=slurm-%x-%j.out
