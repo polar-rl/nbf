@@ -188,9 +188,12 @@ def main() -> None:
     os.makedirs(cfg.data_path, exist_ok=True)
     out_path = os.path.join(cfg.data_path, data_dirname(cfg.data.K))
 
-    if os.path.exists(out_path):
-        print(f'Data already exists at {out_path} — skipping generation.')
+    marker = os.path.join(out_path, 'norm_stats.json')
+    if os.path.exists(marker):
+        print(f'Data complete at {out_path} — skipping generation.')
         return
+    if os.path.exists(out_path):
+        print(f'Incomplete data at {out_path} (no norm_stats.json) — regenerating.')
 
     print(
         f'Generating belief data via gold SMC '
