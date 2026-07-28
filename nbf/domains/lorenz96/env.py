@@ -276,6 +276,11 @@ class Lorenz96Env(eqx.Module):
     def propagate_mean_array(self, state) -> jax.Array:
         return rk4_window(state.x, state.forcing, self.dt, self.substeps, self.linear)
 
+    def marginal_observation_log_prob(self, means: jax.Array, observation) -> jax.Array:
+        marg_var = self.sigma_dyn**2 + observation.sigma_obs**2
+        sq = jnp.sum((means[:, self.obs_idx] - observation.values) ** 2, axis=-1)
+        return -0.5 * sq / marg_var
+
     def conjugate_move(self, means: jax.Array, observation, key: jax.Array) -> jax.Array:
         return conditional_gaussian_redraw(
             means, observation.values, self.obs_idx, self.sigma_dyn, observation.sigma_obs, key

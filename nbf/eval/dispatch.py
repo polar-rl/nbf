@@ -281,6 +281,7 @@ def compute_method_samples_and_density(
             n,
             env=env,
             embedding_model=embedding_model,
+            density_model=density_model,
             k=k,
             state0_b=state0_b,
             obs0_b=obs0_b,

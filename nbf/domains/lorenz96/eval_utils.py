@@ -18,10 +18,13 @@ from nbf.eval.dispatch import (
     compute_method_samples_and_density as _compute_method_samples_and_density,
 )
 from nbf.eval.samples import (
+    nbf_reference_sample_stream_batch,
+    nbf_samples_density_stream_batch,
     pf_reference_sample_stream_batch,
     pf_samples_density_stream_batch,
 )
 from nbf.filters.enkf import EnsembleKalmanFilter, ring_taper
+from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
 from nbf.filters.particle import (
     RegularizedParticleFilter,
     resolve_pf_bandwidths,
@@ -259,16 +262,112 @@ def _enkf_density_sampler(
     )
 
 
+def _nbf_op_sampler(
+    n,
+    *,
+    env,
+    embedding_model,
+    state0_b,
+    obs0_b,
+    states_next_b,
+    obs_prev_b,
+    obs_next_b,
+    num_ref_samples,
+    key,
+    chunk_size=0,
+    desc=None,
+    **_,
+):
+    filt = OptimalProposalNeuralBayesianFilter(embedding_model, num_particles=n)
+    N = batch_size(state0_b)
+    T = time_len(obs_prev_b)
+    rk, sk, samp_k = jax.random.split(key, 3)
+    return chunked_stream(
+        lambda *a: nbf_reference_sample_stream_batch(env, filt, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
+    )
+
+
+def _nbf_op_density_sampler(
+    n,
+    *,
+    env,
+    embedding_model,
+    state0_b,
+    obs0_b,
+    states_next_b,
+    obs_prev_b,
+    obs_next_b,
+    neg_pts_b,
+    num_ref_samples,
+    key,
+    density_model=None,
+    chunk_size=0,
+    desc=None,
+    **_,
+):
+    filt = OptimalProposalNeuralBayesianFilter(embedding_model, num_particles=n)
+    dmodel = density_model if density_model is not None else embedding_model
+    N = batch_size(state0_b)
+    T = time_len(obs_prev_b)
+    rk, sk, samp_k = jax.random.split(key, 3)
+    return chunked_stream(
+        lambda *a: nbf_samples_density_stream_batch(env, filt, dmodel, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
+    )
+
+
+def _pf_op_sampler(
+    n,
+    *,
+    env,
+    state0_b,
+    obs_next_b,
+    num_ref_samples,
+    key,
+    chunk_size=0,
+    desc=None,
+    **_,
+):
+    # The gold-SMC construction at a small budget: the strongest sample-based
+    # baseline under the same locally optimal proposal NBF-OP uses.
+    N = batch_size(state0_b)
+    T = time_len(obs_next_b)
+    prior_key, step_key = jax.random.split(key)
+    return chunked_stream(
+        lambda *a: gold_smc_sample_stream_batch(env, *a),
+        (state0_b, obs_next_b.values),
+        (jax.random.split(prior_key, N), split_T(step_key, N, T)),
+        (n, num_ref_samples),
+        N,
+        chunk_size,
+        desc=desc,
+    )
+
+
 L96_EXTRA_SAMPLERS = {
     'pf_reg': _filter_sampler(make_pf_reg),
     'pf_rm': _filter_sampler(make_pf_rm),
     'enkf': _filter_sampler(make_enkf),
+    'nbf_op': _nbf_op_sampler,
+    'pf_op': _pf_op_sampler,
 }
 
 L96_EXTRA_DENSITY_SAMPLERS = {
     'pf_reg': _kde_density_sampler(make_pf_reg),
     'pf_rm': _kde_density_sampler(make_pf_rm),
     'enkf': _enkf_density_sampler,
+    'nbf_op': _nbf_op_density_sampler,
 }
 
 

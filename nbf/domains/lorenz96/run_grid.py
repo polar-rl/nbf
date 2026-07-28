@@ -5,7 +5,6 @@ import os
 import zlib
 
 import jax
-
 import numpy as np  # noqa: E402
 
 from nbf.config import build_dataclass  # noqa: E402
@@ -62,7 +61,7 @@ DEFAULT_METHODS = (
     'pf_oracle'
 )
 
-DENSITY_KINDS = ('nbf', 'pf', 'pf_reg', 'pf_rm', 'enkf')
+DENSITY_KINDS = ('nbf', 'nbf_op', 'pf', 'pf_reg', 'pf_rm', 'enkf')
 
 
 def make_cell_env(data_cfg, f_bands, sigma_obs, episode_length: int) -> Lorenz96Env:
