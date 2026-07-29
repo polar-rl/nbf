@@ -51,7 +51,8 @@ for r in nbf embedex; do
   echo "$r $(git -C "$BASE/repos/$r" rev-parse HEAD)"
 done > "$OUT_DIR/git-shas.txt"
 
-echo "Task $SLURM_ARRAY_TASK_ID  model=$MODEL_DIR  out=$OUT_DIR  methods=$METHODS"
+echo "Task $SLURM_ARRAY_TASK_ID  model=$MODEL_DIR  out=$OUT_DIR"
+echo "Gold-SMC oracle particles: $NBF_GOLD_SMC_COUNT  methods=$METHODS"
 $PY -m nbf.domains.lorenz96.run_grid \
     --task_id="$SLURM_ARRAY_TASK_ID" \
     --model_dir="$MODEL_DIR" \

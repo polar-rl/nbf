@@ -143,10 +143,13 @@ def load_shards(output_dir: str) -> dict[str, dict]:
 def oracle_cache_path(
     output_dir, cell, subcell, num_episodes, episode_length, S, seed, substeps, sigma_obs
 ) -> str:
+    # GOLD_SMC_COUNT belongs in the name: without it a cache written at one
+    # particle count is silently reused at another (hit 2026-07-28, one shard
+    # scored against a stale 200k oracle inside a 2M run).
     sig = f'{sigma_obs[0]:g}-{sigma_obs[1]:g}'
     fname = (
         f'l96_{cell}_{subcell}_N{num_episodes}_T{episode_length}_S{S}'
-        f'_sub{substeps}_sig{sig}_seed{seed}.npz'
+        f'_sub{substeps}_sig{sig}_G{GOLD_SMC_COUNT}_seed{seed}.npz'
     )
     return os.path.join(output_dir, '_oracle_cache', fname)
 
