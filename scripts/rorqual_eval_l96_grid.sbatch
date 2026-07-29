@@ -4,7 +4,7 @@
 #SBATCH --gres=gpu:h100:1
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=32000M
-#SBATCH --time=12:00:00
+#SBATCH --time=3:00:00
 #SBATCH --array=0-14
 #SBATCH --requeue
 #SBATCH --output=slurm-%x-t%a-%j.out
@@ -33,12 +33,12 @@ export UV_OFFLINE=1
 export UV_PROJECT_ENVIRONMENT=$SLURM_TMPDIR/venv
 
 OUT_DIR=${OUT_DIR:-$SCRATCH/nbf/l96/$(basename "$MODEL_DIR")/grid}
-METHODS=${METHODS:-nbf_1024,nbf_2048,nbf_op_1024,nbf_op_2048,pf_16384,pf_reg_16384,pf_rm_16384,pf_op_16384,enkf_50,enkf_100,pf_oracle}
+METHODS=${METHODS:-nbf_1024,nbf_2048,nbf_op_1024,nbf_op_2048,pf_16384,pf_32768,pf_reg_16384,pf_reg_32768,pf_rm_16384,pf_rm_32768,pf_op_16384,pf_op_32768,enkf_50,enkf_100,pf_oracle}
 NUM_EPISODES=${NUM_EPISODES:-100}
 SEEDS=${SEEDS:-0,1,2,3,4}
 GOLD_SMC_COUNT=${GOLD_SMC_COUNT:-200000}
 CHUNK_SIZE=${CHUNK_SIZE:-16}
-TIMING_REPEATS=${TIMING_REPEATS:-1}
+TIMING_REPEATS=${TIMING_REPEATS:-0}
 
 mkdir -p "$OUT_DIR"
 
