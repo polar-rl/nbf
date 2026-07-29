@@ -90,8 +90,9 @@ def run_v1(args):
         f'V1: K=40, F=8, fully observed, R=I, window 0.05, m={args.members}, '
         f'{num_steps} steps ({spinup} spin-up)'
     )
-    print('   anchor: stochastic EnKF (PertObs) rmse_a ~ 0.22, EnSRF/DEnKF ~ 0.18')
-    print('   (Sakov-Oke 2008 Table 1 via DAPPER mods/Lorenz96/sakov2008)')
+    print('   anchor: stochastic EnKF (PertObs) rmse_a ~ 0.22 at N=40, EnSRF/DEnKF ~ 0.18')
+    print('   (DAPPER benchmark mods/Lorenz96/sakov2008; configuration from Sakov & Oke 2008,')
+    print("    which reports in figures only -- the 0.22 is DAPPER's value, not the paper's)")
     inflation, radius, best = _sweep_enkf(
         env,
         args.members,
