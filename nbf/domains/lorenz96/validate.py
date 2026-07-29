@@ -126,7 +126,7 @@ def run_v2(args):
         f'V2: K=40, truth F=8 / model F=9, every 2nd site, sigma_obs=0.5, '
         f'window 0.3, m={args.members}, {num_steps} steps ({spinup} spin-up)'
     )
-    print('   anchor: LMCPF 0.77, LETKF 0.86, LAPF 0.97 (Kirchgessner et al. 2022, Fig. 11)')
+    print('   anchor: LMCPF 0.77, LETKF 0.86, LAPF 0.97 (Schenk, Potthast & Rojahn 2022, Fig. 11)')
     inflation, radius, best = _sweep_enkf(
         env,
         args.members,
