@@ -47,8 +47,9 @@ def e3_stream_batch(
 
         def _step(parts, xs):
             k, y = xs
-            keys = jax.random.split(k, 8)
-            sub_key, bprop_key, a_key, gen_key, prop_key, res_key, rej_key, samp_key = keys
+            keys = jax.random.split(k, 9)
+            sub_key, bprop_key, a_key, gen_key, prop_key, res_key, rej_key = keys[:7]
+            samp_key, floor_key = keys[7], keys[8]
 
             sub_idx = jax.random.choice(sub_key, num_gold, (budget,), replace=False)
             b_means = rk4_window(parts[sub_idx], forcing, env.dt, env.substeps, env.linear)
@@ -73,10 +74,14 @@ def e3_stream_batch(
                 means[idx], y, obs_idx, env.sigma_dyn, sigma_obs, rej_key
             )
             samp_idx = jax.random.randint(samp_key, (num_ref_samples,), 0, num_gold)
-            return parts, (weighted_samps, regen_samps, parts[samp_idx], ess_frac)
+            # A second independent draw from the same updated gold cloud: scored
+            # against the reference it gives the subsampling floor, i.e. how much
+            # of any arm's MMD is the reference's own Monte Carlo error.
+            floor_idx = jax.random.randint(floor_key, (num_ref_samples,), 0, num_gold)
+            return parts, (weighted_samps, regen_samps, parts[samp_idx], parts[floor_idx], ess_frac)
 
-        _, (a, b, ref, ess) = jax.lax.scan(_step, parts, (step_keys, obs_values))
-        return a, b, ref, ess
+        _, (a, b, ref, floor, ess) = jax.lax.scan(_step, parts, (step_keys, obs_values))
+        return a, b, ref, floor, ess
 
     return jax.vmap(_one)(state0_b, obs_values_b, prior_keys, step_keys_b)
 
@@ -91,7 +96,7 @@ def run_cell(args, data_cfg, model, sigma, budget, seed):
         env, args.episode_length, args.num_episodes, rollout_key
     )
     N, T = args.num_episodes, args.episode_length
-    a, b, ref, ess = chunked_stream(
+    a, b, ref, floor, ess = chunked_stream(
         lambda *xs: e3_stream_batch(env, model, *xs),
         (state0_b, obs_next_b.values),
         (jax.random.split(prior_key, N), split_T(step_key, N, T)),
@@ -105,6 +110,9 @@ def run_cell(args, data_cfg, model, sigma, budget, seed):
             mmd2_multibw_per_step_chunked(a, ref, chunk_size=args.chunk_size)
         ),
         'mmd_regen': np.asarray(mmd2_multibw_per_step_chunked(b, ref, chunk_size=args.chunk_size)),
+        'mmd_floor': np.asarray(
+            mmd2_multibw_per_step_chunked(floor, ref, chunk_size=args.chunk_size)
+        ),
         'ess_frac': np.asarray(ess),
     }
 
@@ -113,13 +121,15 @@ def write_summaries(args, sigmas, budgets, results):
     md_lines = [
         f'# L96 E3 mechanism ablation (F={args.f_value}, t>={args.t_min})',
         '',
-        '| sigma_obs | n | weighted set MMD$^2$ | fit-and-regenerate MMD$^2$ | ESS/n |',
-        '|---|---|---|---|---|',
+        '| sigma_obs | n | weighted set MMD$^2$ | fit-and-regenerate MMD$^2$ '
+        '| reference floor MMD$^2$ | ESS/n |',
+        '|---|---|---|---|---|---|',
     ]
     tex_lines = [
         f'% e3 F={args.f_value} t_min={args.t_min}',
-        r'\begin{tabular}{ccccc}',
-        r'$\sigma_{obs}$ & $n$ & weighted set MMD$^2$ & fit-and-regenerate MMD$^2$ & ESS/$n$ \\',
+        r'\begin{tabular}{cccccc}',
+        r'$\sigma_{obs}$ & $n$ & weighted set MMD$^2$ & fit-and-regenerate MMD$^2$ '
+        r'& reference floor MMD$^2$ & ESS/$n$ \\',
         r'\hline',
     ]
     for sigma in sigmas:
@@ -128,16 +138,18 @@ def write_summaries(args, sigmas, budgets, results):
                 metric: np.concatenate(
                     [results[(sigma, budget, s)][metric] for s in parse_seeds(args)], axis=0
                 )[:, args.t_min :]
-                for metric in ('mmd_weighted', 'mmd_regen', 'ess_frac')
+                for metric in ('mmd_weighted', 'mmd_regen', 'mmd_floor', 'ess_frac')
             }
             mw, mw_sem = aggregate_mean_sem(pooled['mmd_weighted'])
             mg, mg_sem = aggregate_mean_sem(pooled['mmd_regen'])
+            mf, mf_sem = aggregate_mean_sem(pooled['mmd_floor'])
             ess, _ = aggregate_mean_sem(pooled['ess_frac'])
             cells = [
                 f'{sigma}',
                 f'{budget}',
                 f'{fmt_val(mw)} ± {fmt_val(mw_sem)}',
                 f'{fmt_val(mg)} ± {fmt_val(mg_sem)}',
+                f'{fmt_val(mf)} ± {fmt_val(mf_sem)}',
                 fmt_val(ess),
             ]
             md_lines.append('| ' + ' | '.join(cells) + ' |')
@@ -206,13 +218,13 @@ def main() -> None:
             for seed in seeds:
                 res = run_cell(args, data_cfg, model, sigma, budget, seed)
                 results[(sigma, budget, seed)] = res
-                mw, mw_sem = aggregate_mean_sem(res['mmd_weighted'][:, args.t_min :])
-                mg, mg_sem = aggregate_mean_sem(res['mmd_regen'][:, args.t_min :])
+                mw, _ = aggregate_mean_sem(res['mmd_weighted'][:, args.t_min :])
+                mg, _ = aggregate_mean_sem(res['mmd_regen'][:, args.t_min :])
+                mf, _ = aggregate_mean_sem(res['mmd_floor'][:, args.t_min :])
                 ess, _ = aggregate_mean_sem(res['ess_frac'][:, args.t_min :])
                 print(
                     f'  [s{sigma} n{budget} seed {seed}] '
-                    f'weighted={mw:.5f}+/-{mw_sem:.5f} regen={mg:.5f}+/-{mg_sem:.5f} '
-                    f'ess/n={ess:.3f}'
+                    f'weighted={mw:.5f} regen={mg:.5f} floor={mf:.5f} ess/n={ess:.3f}'
                 )
 
     out = {
