@@ -6,16 +6,15 @@ import jax.numpy as jnp
 import numpy as np
 
 from nbf.domains.pursuit_evasion.env import L, normalize_positions
-from nbf.domains.pursuit_evasion.eval.base import (
+from nbf.domains.pursuit_evasion.eval.base import make_env_kn, make_pe_gmf
+from nbf.domains.pursuit_evasion.policies import make_goal_policy
+from nbf.domains.pursuit_evasion.visualize import plot_e1_heatmaps
+from nbf.eval.base import (
     env_rollout_batch,
-    make_env_kn,
-    make_pe_gmf,
     parse_csv_methods,
     parse_method_spec,
     slice_rollout_no_gt,
 )
-from nbf.domains.pursuit_evasion.policies import make_goal_policy
-from nbf.domains.pursuit_evasion.visualize import plot_e1_heatmaps
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.particle import ParticleFilter
 
@@ -94,7 +93,7 @@ def _run_filter_capture(
         embedding = nbf.reset(env, state0, obs0, sk[0])
         captured = {}
         for t in range(T):
-            embedding, _ = nbf.update(
+            embedding, _, _, _ = nbf.update(
                 env,
                 embedding,
                 jax.tree.map(lambda x, t=t: x[t], states_next),
@@ -108,14 +107,14 @@ def _run_filter_capture(
         return captured
 
     if kind == 'pf' or kind == 'pf_oracle':
-        from nbf.domains.pursuit_evasion.eval.dispatch import ORACLE_PF_COUNT
+        from nbf.eval.dispatch import ORACLE_PF_COUNT
 
         pf_n = ORACLE_PF_COUNT if kind == 'pf_oracle' else n
         pf = ParticleFilter(num_particles=pf_n)
         pf_set = pf.reset(env, state0, obs0, sk[0])
         captured = {}
         for t in range(T):
-            pf_set, _ = pf.update(
+            pf_set, _, _, _ = pf.update(
                 env,
                 pf_set,
                 jax.tree.map(lambda x, t=t: x[t], states_next),

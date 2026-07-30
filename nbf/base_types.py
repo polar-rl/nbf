@@ -4,8 +4,6 @@ from typing import TypeVar
 import equinox as eqx
 import jax
 
-# TODO: move to polar-rl/pomdp once that repo exists; nbf and bets will both depend on it.
-
 S = TypeVar('S', bound='State')
 
 

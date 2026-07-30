@@ -8,6 +8,7 @@ import numpy as np
 from jax import Array
 from tqdm import tqdm
 
+from nbf.data import load_arrays
 from nbf.domains.pursuit_evasion.config import (
     Config,
     DataConfig,
@@ -153,10 +154,7 @@ def generate_data(
 def load_data(data_path: str, num_evaders: int = 1) -> dict[str, np.ndarray]:
     """Load a previously generated belief-data directory of ``.npy`` files."""
     dpath = os.path.join(data_path, data_dirname(num_evaders))
-    return {
-        'particles_tp1': np.load(os.path.join(dpath, 'particles_tp1.npy'), mmap_mode='r'),
-        'weights_tp1': np.load(os.path.join(dpath, 'weights_tp1.npy'), mmap_mode='r'),
-    }
+    return load_arrays(dpath, ('particles_tp1', 'weights_tp1'))
 
 
 def main() -> None:
