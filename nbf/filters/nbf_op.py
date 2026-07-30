@@ -23,11 +23,6 @@ def optimal_proposal_particle_set(
     next_observation: Observation,
     key: jax.Array,
 ) -> ParticleSet:
-    # The exact locally optimal proposal for envs with Gaussian transition noise
-    # and per-site linear-Gaussian observations: weight each particle by the
-    # marginal likelihood of the observation at its propagated mean, then draw
-    # the particle exactly from p(x' | mean, y). Matches the gold-SMC and
-    # corpus construction in nbf.domains.lorenz96.generate_data.
     means = jax.vmap(env.propagate_mean_array)(particles)
     log_w = env.marginal_observation_log_prob(means, next_observation)
     finite = jnp.isfinite(log_w)
@@ -49,9 +44,6 @@ def optimal_proposal_particle_set(
 
 
 class OptimalProposalNeuralBayesianFilter(NeuralBayesianFilter):
-    # Same model, same embed/generate calls as NeuralBayesianFilter; only the
-    # propagate-and-weight step changes, so no retraining is involved.
-
     def __repr__(self) -> str:
         return f'NBF-OP ({self.num_particles})'
 
