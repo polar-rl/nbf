@@ -19,7 +19,7 @@ dependencies = [
 
 [project.optional-dependencies]
 gpu = [
-    'jax[cuda12]>=0.9.1',
+    "jax[cuda12]>=0.9.1; sys_platform == 'linux'",
 ]
 dev = [
     'pre-commit>=4.5.1',
