@@ -87,16 +87,20 @@ class NeuralBayesianFilter(eqx.Module):
         )
         neff = particle_set.neff()
 
-        particle_set = jax.lax.cond(
-            neff < self.num_particles * 0.5,
-            lambda: particle_set.systematic_resample(resample_key),
-            lambda: particle_set,
-        )
+        particle_set = self.maybe_resample(particle_set, resample_key)
         features = jax.vmap(lambda p: p.to_flat_features())(particle_set.particles)
 
         embedding = self.model.embed(features, particle_set.weights)[0]
 
         return embedding, neff, sampling_fallback, simulation_fallback
+
+    def maybe_resample(self, particle_set: ParticleSet, key: jax.Array) -> ParticleSet:
+        """Systematic resample when the effective sample size drops below half."""
+        return jax.lax.cond(
+            particle_set.neff() < self.num_particles * 0.5,
+            lambda: particle_set.systematic_resample(key),
+            lambda: particle_set,
+        )
 
     @eqx.filter_jit
     def update_with_ground_truth(
@@ -119,11 +123,7 @@ class NeuralBayesianFilter(eqx.Module):
         )
         neff = particle_set.neff()
 
-        particle_set = jax.lax.cond(
-            neff < self.num_particles * 0.5,
-            lambda: particle_set.systematic_resample(resample_key),
-            lambda: particle_set,
-        )
+        particle_set = self.maybe_resample(particle_set, resample_key)
         features = jax.vmap(lambda p: p.to_flat_features())(particle_set.particles)
 
         embedding = self.model.embed(features, particle_set.weights)[0]
