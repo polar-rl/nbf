@@ -1,58 +1,45 @@
 # Pursuit-Evasion Filtering Experiments
 
-Range-only target tracking with a stationary sensor in a 10×10 grid with obstacles. Supports `k = 1, 2, 3, 5` evaders. Compares Neural Bayesian Filtering (NBF) against standard particle filters and UKF baselines.
+Range-only target tracking with a stationary sensor in a 10×10 grid with obstacles. Supports `k = 1, 3, 5` evaders. Compares Neural Bayesian Filtering (NBF) against particle filters and a Gaussian mixture filter.
 
 ## Files
 
 | File | Purpose |
 |---|---|
 | `env.py` | `PursuitEvasionEnv` — dynamics, range-only observations, obstacles, soft inter-evader repulsion, optional shuffled-observation likelihood |
-| `policies.py` | Evader policy library (goal, random walk, patrol, evasive, wall-hugger) and named OOD k-tuples (`ood_scenarios`) |
-| `kalman.py` | Unscented Kalman Filter baseline (deliberately weak; Gaussian misfit on multimodal posteriors) |
-| `gmf.py` | Gaussian mixture filter baseline |
-| `pf_kde_bandwidths.py` | KDE bandwidth utilities for particle-filter density evaluation |
-| `generate_data.py` | Belief data generation: joint particle filter at large particle count, treated as the reference posterior |
-| `train.py` | NBF embedding model training (delegates the training loop to `embedex.distributions.training`) |
-| `evaluate.py` | Evaluation dispatcher — runs one or more of `experiments/experiment_{1..8}` |
-| `visualize.py` | Plots: JS-vs-time, dimension scaling, OOD bar charts, filter heatmaps |
-| `config.py` | PE-specific config dataclasses; reads `configs/nbf_k*.yaml` |
-| `eval_utils.py`, `eval_utils_kn.py` | Shared evaluation helpers (rollouts, embedding loading, k>1 specifics) |
-| `experiments/experiment_{1..8}.py` | Individual evaluation scenarios dispatched by `evaluate.py` |
-| `experiments/experiment_diag.py` | Early-step diagnostic for k=1 |
+| `policies.py` | Evader policy library (goal, random walk, patrol, evasive, wall-hugger, orbit), the training mixture, and the named OOD scenarios |
+| `train.py` | On-policy NBF training: episodes are simulated on the fly under policies drawn from the training mixture, the filter is rolled out with the current parameters, and the generator objective is evaluated at the true joint state (loop in `nbf/train.py`) |
+| `run_grid.py` | Evaluation grid: `id` (training-mixture components), `ood` (held-out policies), `sigma` (pinned observation noise past the training range); one shard per (cell, subcell, seed), `--merge` builds the tables |
+| `eval/` | Evaluation helpers: GMF construction, sample and density streams, method dispatch, sigma override |
+| `visualize.py` | Plots: metric-vs-time, dimension scaling, OOD bar charts, filter heatmaps |
+| `config.py` | `DataConfig` (evader count, episode length, interaction, shuffling) |
+
+There is no data generation step and no reference posterior: the trainer needs only the simulator, and evaluation scores every method on the true state (NLL for native densities, RMSE, CRPS, coverage, spread).
 
 ## Multi-evader (k > 1)
 
 For `k > 1` two mechanisms make the joint posterior genuinely non-factorisable, so a tracker that maintains independent per-evader marginals cannot succeed:
 
-- **Pairwise soft repulsion** in `env.transition_joint`: each evader is pushed away from any neighbour closer than `interaction_radius` with magnitude proportional to `interaction_strength`. Per-evader policies are still sampled independently from the policy library each episode — all coupling comes from this interaction term, not from shared intent.
+- **Pairwise soft repulsion** in `env.transition_joint`: each evader is pushed away from any neighbour closer than `interaction_radius` with magnitude proportional to `interaction_strength`. Per-evader policies are still sampled independently from the training mixture each episode — all coupling comes from this interaction term, not from shared intent.
 - **Shuffled range observations** (`shuffle_observations: true`): the sensor returns the `k` ranges in a random order at every step. The likelihood in `observation_weights` is marginalised exactly over the `k!` permutations (`k ≤ 5` keeps this cheap).
 
-The reference posterior at every `k` is a large joint particle filter (`num_pf_particles`, default 100000). The NBF set-transformer embedding is permutation-invariant over particles, which matches both the joint-state symmetry and the shuffled-observation likelihood.
-
-UKF is included as a baseline at all `k`. It is *not* expected to do well: the range-only likelihood is already multimodal at `k=1` (annulus around the sensor), and at `k>1` the posterior is additionally a mixture over the `k!` permutation-consistent labellings under shuffled observations. A single Gaussian cannot represent either, which is exactly the gap NBF is meant to close.
+The NBF set-transformer embedding is permutation-invariant over particles, which matches both the joint-state symmetry and the shuffled-observation likelihood.
 
 ## Configs
 
-`configs/nbf_k{1,2,3,5}.yaml` — one config per evader count. Each defines the model (embedding + flow matching generator), training hyperparameters, data generation parameters, and the `data_path` / `save_path` roots (relative to the working directory).
+`configs/nbf_k{1,3,5}.yaml` — one config per evader count: model (embedding + flow-matching generator), training and rollout hyperparameters, and `save_path` (relative to the repo root). `configs/smoke_k1.yaml` is the CPU smoke config used by `scripts/smoke_k1.sh`.
 
 ## Running
 
-All commands assume the current working directory is the repo root.
-
 ```bash
-# 1. Generate reference belief data
-python -m nbf.domains.pursuit_evasion.generate_data \
-    --config nbf/domains/pursuit_evasion/configs/nbf_k1.yaml
-
-# 2. Train the NBF embedding
+# Train the NBF embedding on-policy
 python -m nbf.domains.pursuit_evasion.train \
     --config nbf/domains/pursuit_evasion/configs/nbf_k1.yaml
 
-# 3. Evaluate (dispatches experiments E1..E8; see --help for filtering)
-python -m nbf.domains.pursuit_evasion.evaluate \
-    --config nbf/domains/pursuit_evasion/configs/nbf_k1.yaml \
-    --experiments 1,2 \
-    --model_dir results/pursuit_evasion/k1/nbf/<run_name>
+# Evaluate one cell locally (id / ood / sigma), or one shard per array task on a cluster
+python -m nbf.domains.pursuit_evasion.run_grid id \
+    --model_dir results/pursuit_evasion/k1/nbf --output_dir results/pursuit_evasion/k1/grid
+python -m nbf.domains.pursuit_evasion.run_grid --list_tasks --output_dir /tmp/x   # array size
+python -m nbf.domains.pursuit_evasion.run_grid --merge --t_min 2 \
+    --model_dir results/pursuit_evasion/k1/nbf --output_dir results/pursuit_evasion/k1/grid
 ```
-
-`evaluate.py` takes per-experiment flags (`--e1_methods`, `--e2_ks`, `--e5_sigma_methods`, …); see `python -m nbf.domains.pursuit_evasion.evaluate --help` for the full list. Experiments 7 and 8 are PF-only sweeps and do not need an embedding model.

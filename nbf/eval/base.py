@@ -99,8 +99,6 @@ def cast_velocity_net_bf16(model):
 
 
 def parse_method_spec(spec: str) -> tuple[str, int]:
-    if spec == 'pf_oracle':
-        return 'pf_oracle', 0
     kind, _, n = spec.rpartition('_')
     if not kind:
         raise ValueError(f'Invalid method spec {spec!r}')

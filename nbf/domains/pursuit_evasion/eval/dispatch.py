@@ -1,22 +1,24 @@
+import os
+
 import jax
 from jax import Array
 
-from nbf.domains.pursuit_evasion.eval.base import make_pe_gmf, sample_background_batch
+from nbf.domains.pursuit_evasion.eval.base import make_pe_gmf
 from nbf.domains.pursuit_evasion.eval.samples import (
     gmf_reference_sample_stream_batch,
     gmf_samples_density_stream_batch,
 )
 from nbf.eval.base import batch_size, chunked_stream, split_T, time_len
 from nbf.eval.dispatch import (
-    cache_path_for,
-    get_or_compute_oracle,
-)
-from nbf.eval.dispatch import (
     compute_method_samples as _compute_method_samples,
 )
 from nbf.eval.dispatch import (
     compute_method_samples_and_density as _compute_method_samples_and_density,
 )
+from nbf.eval.dispatch import filter_sampler
+from nbf.eval.samples import gaussian_filter_samples_density_stream_batch
+from nbf.filters.enkf import EnsembleKalmanFilter
+from nbf.filters.particle import RegularizedParticleFilter
 
 
 def _gmf_sampler(
@@ -33,7 +35,7 @@ def _gmf_sampler(
     desc=None,
     **_,
 ):
-    gmf = make_pe_gmf(num_evaders=env.num_evaders, M=n)
+    gmf = make_pe_gmf(M=n, env=env)
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
     ik, samp_k = jax.random.split(key)
@@ -52,17 +54,15 @@ def _gmf_density_sampler(
     n,
     *,
     env,
-    k,
     state0_b,
     obs_prev_b,
     states_next_b,
     obs_next_b,
-    neg_pts_b,
     num_ref_samples,
     key,
     **_,
 ):
-    gmf = make_pe_gmf(num_evaders=k, M=n)
+    gmf = make_pe_gmf(M=n, env=env)
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
     ik, samp_k = jax.random.split(key)
@@ -73,13 +73,60 @@ def _gmf_density_sampler(
         obs_next_b,
         jax.random.split(ik, N),
         split_T(samp_k, N, T),
-        neg_pts_b,
         num_ref_samples,
     )
 
 
-PE_EXTRA_SAMPLERS = {'gmf': _gmf_sampler}
-PE_EXTRA_DENSITY_SAMPLERS = {'gmf': _gmf_density_sampler}
+PE_PF_REG_BANDWIDTH_SCALE = 1.0
+PE_ENKF_INFLATION = float(os.environ.get('NBF_PE_ENKF_INFLATION', 1.05))
+
+
+def make_pe_pf_reg(n: int) -> RegularizedParticleFilter:
+    return RegularizedParticleFilter(num_particles=n, bandwidth_scale=PE_PF_REG_BANDWIDTH_SCALE)
+
+
+def make_pe_enkf(m: int) -> EnsembleKalmanFilter:
+    """Stochastic EnKF on the sorted-range observation operator of the PE env; no
+    localization (one sensor), so `loc_radius` is unused."""
+    return EnsembleKalmanFilter(num_members=m, inflation=PE_ENKF_INFLATION)
+
+
+def _enkf_density_sampler(
+    n,
+    *,
+    env,
+    state0_b,
+    obs0_b,
+    states_next_b,
+    obs_prev_b,
+    obs_next_b,
+    num_ref_samples,
+    key,
+    chunk_size=0,
+    desc=None,
+    **_,
+):
+    filt = make_pe_enkf(n)
+    N = batch_size(state0_b)
+    T = time_len(obs_prev_b)
+    rk, sk, samp_k = jax.random.split(key, 3)
+    return chunked_stream(
+        lambda *a: gaussian_filter_samples_density_stream_batch(env, filt, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
+    )
+
+
+PE_EXTRA_SAMPLERS = {
+    'gmf': _gmf_sampler,
+    'pf_reg': filter_sampler(make_pe_pf_reg),
+    'enkf': filter_sampler(make_pe_enkf),
+}
+PE_EXTRA_DENSITY_SAMPLERS = {'gmf': _gmf_density_sampler, 'enkf': _enkf_density_sampler}
 
 
 def compute_method_samples(spec: str, **kwargs) -> Array:
@@ -90,46 +137,3 @@ def compute_method_samples_and_density(spec: str, **kwargs):
     return _compute_method_samples_and_density(
         spec, extra_density_samplers=PE_EXTRA_DENSITY_SAMPLERS, **kwargs
     )
-
-
-def prepare_oracle_and_negatives(
-    *,
-    out_dir: str,
-    env,
-    k: int,
-    scenario: str,
-    num_episodes: int,
-    episode_length: int,
-    seed: int,
-    num_ref_samples: int,
-    num_negatives: int,
-    state0_b,
-    obs0_b,
-    states_next_b,
-    obs_prev_b,
-    obs_next_b,
-    oracle_key: Array,
-    neg_key: Array,
-) -> tuple[Array, Array]:
-    cache = cache_path_for(
-        out_dir, k, scenario, num_episodes, episode_length, num_ref_samples, seed
-    )
-    oracle = get_or_compute_oracle(
-        cache_path=cache,
-        env=env,
-        state0_b=state0_b,
-        obs0_b=obs0_b,
-        states_next_b=states_next_b,
-        obs_prev_b=obs_prev_b,
-        obs_next_b=obs_next_b,
-        num_ref_samples=num_ref_samples,
-        key=oracle_key,
-    )
-    neg_pts_b = sample_background_batch(
-        jax.random.split(neg_key, num_episodes * episode_length).reshape(
-            num_episodes, episode_length, -1
-        ),
-        num_negatives,
-        k,
-    )
-    return oracle, neg_pts_b

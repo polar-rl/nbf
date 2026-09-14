@@ -1,0 +1,52 @@
+model:
+  input_dim: 40
+  embedding:
+    block_type: set_transformer
+    embedding_dim: 256
+    hidden_size: 512
+    num_rounds: 3
+    num_heads: 8
+    num_inducing: 64
+    pool_type: attention
+  generator:
+    flow_type: fm
+    conditioning: concat
+    fm_hidden_size: 512
+    fm_num_layers: 8
+    fm_time_embed_dim: 16
+    fm_num_steps: 100
+    fm_sigma_min: 1e-4
+
+training:
+  num_iterations: 100000
+  learning_rate: 1.0e-4
+  end_learning_rate: 1.0e-6
+  warmup_steps: 5000
+  batch_size: 256
+  log_interval: 100
+  checkpoint_interval: 5000
+  clip_grad_norm: 1.0
+  seed: 0
+  rollout_num_particles: 4096
+  episodes_per_rollout: 64
+  grad_steps_per_rollout: 40
+  rollout_fm_steps: 10
+  rollout_bf16: true
+  micro_batches: 8
+  norm_episodes: 512
+  val_episodes: 64
+  val_interval: 5000
+
+data:
+  K: 40
+  episode_length: 20
+  dt: 0.01
+  window_substeps: 40
+  sigma_dyn: 0.25
+  sigma_obs_min: 0.5
+  sigma_obs_max: 1.1
+  f_bands: [[5.0, 7.0], [9.0, 11.0]]
+  spinup_time: 10.0
+  sigma_init: 2.0
+
+save_path: results/k40/nbf_hard/

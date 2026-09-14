@@ -325,3 +325,15 @@ class TestPfRegNanRobustness:
         pset2, _, _, _ = pf.update(env, pset, state, ts.observation, 0, ts2.observation, update_key)
         assert np.all(np.isfinite(np.asarray(pset2.particles.x)))
         assert np.all(np.isfinite(np.asarray(pset2.weights)))
+
+
+def test_normalize_log_jacobian_matches_change_of_variables():
+    # A density in normalized coordinates plus the Jacobian equals the raw-state density:
+    # for z = (x - m) / s per coordinate, log p_x(x) = log p_z(z) - K log s.
+    env = Lorenz96Env(K=8, time_limit=5, norm_mean=1.5, norm_std=2.5)
+    x = jnp.linspace(-3.0, 4.0, 8)[None]
+    z = env.normalize_flat(x)
+    logp_z = -0.5 * jnp.sum(z**2) - 0.5 * 8 * jnp.log(2 * jnp.pi)  # standard normal in z
+    logp_x = logp_z + env.normalize_log_jacobian()
+    expected = jax.scipy.stats.norm.logpdf(x[0], loc=1.5, scale=2.5).sum()
+    assert jnp.allclose(logp_x, expected, atol=1e-5)

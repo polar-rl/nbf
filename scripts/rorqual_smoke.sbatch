@@ -23,6 +23,6 @@ uv sync --frozen --extra gpu
 PY=$SLURM_TMPDIR/venv/bin/python
 
 $PY -c "import jax; print('devices:', jax.devices())"
-$PY -c "import nbf.domains.lorenz96.run_grid; import nbf.filters.nbf_op; print('imports OK')"
+$PY -c "import nbf.domains.lorenz96.run_grid; print('imports OK')"
 nvidia-smi --query-gpu=name,memory.total --format=csv || true
 echo SMOKE-OK

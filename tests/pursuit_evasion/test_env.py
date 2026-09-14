@@ -181,28 +181,6 @@ class TestObservationWeights:
         assert float(jnp.std(w)) > 0.0
 
 
-class TestGenerateDataIntegration:
-    def test_generate_data_shapes(self, key, tmp_path):
-        from nbf.domains.pursuit_evasion.config import DataConfig
-        from nbf.domains.pursuit_evasion.generate_data import generate_data, load_data
-
-        data_cfg = DataConfig(
-            num_evaders=1,
-            num_episodes_per_policy=1,
-            episode_length=2,
-            num_policies=2,
-            num_pf_particles=64,
-        )
-        out_dir = str(tmp_path / 'pe_belief_data_k1')
-        generate_data(data_cfg, num_samples=4, key=key, out_dir=out_dir)
-        data = load_data(str(tmp_path), data_cfg.num_evaders)
-
-        rows_per_episode = data_cfg.episode_length + 1
-        n_steps = data_cfg.num_policies * data_cfg.num_episodes_per_policy * rows_per_episode
-        assert data['particles_tp1'].shape == (n_steps, 4, 2)
-        assert data['weights_tp1'].shape == (n_steps, 4)
-
-
 class TestMultiEvader:
     def test_repulsion_pushes_close_pair_apart(self, key):
         pols = (make_random_walk_policy(),) * 2
@@ -264,3 +242,15 @@ class TestMultiEvader:
         w, _ = env_p.observation_weights(particles, obs, obs)
         w_perm, _ = env_p.observation_weights(particles, obs_perm, obs_perm)
         assert jnp.allclose(w, w_perm, atol=1e-5)
+
+
+def test_normalize_log_jacobian_matches_change_of_variables():
+    from nbf.domains.pursuit_evasion.env import L
+
+    env = PursuitEvasionEnv(num_evaders=2, time_limit=5)
+    x = jnp.array([[[1.0, 2.0], [7.5, 9.0]]])  # (1, k, 2) raw positions
+    z = env.normalize_flat(x)[0]
+    logp_z = -0.5 * jnp.sum(z**2) - 0.5 * 4 * jnp.log(2 * jnp.pi)
+    logp_x = logp_z + env.normalize_log_jacobian()
+    expected = jax.scipy.stats.norm.logpdf(x.reshape(-1), loc=0.5 * L, scale=0.5 * L).sum()
+    assert jnp.allclose(logp_x, expected, atol=1e-5)

@@ -152,7 +152,6 @@ class Lorenz96Env(eqx.Module):
     norm_mean: jax.Array
     norm_std: jax.Array
     generator: Lorenz96Generator
-    has_state_observation: bool = eqx.field(static=True)
     has_continuous_features: bool = eqx.field(static=True)
     has_prior_sampler: bool = eqx.field(static=True)
 
@@ -203,7 +202,6 @@ class Lorenz96Env(eqx.Module):
             norm_std=jnp.asarray(norm_std),
             obs_idx=jnp.asarray(self.obs_sites),
         )
-        self.has_state_observation = False
         self.has_continuous_features = True
         self.has_prior_sampler = True
 
@@ -258,6 +256,29 @@ class Lorenz96Env(eqx.Module):
         )
         return weights, jnp.array(False)
 
+    def state_observation_weights(self, particles, observation) -> tuple[jax.Array, jax.Array]:
+        n = particles.x.shape[0]
+        return jnp.full(n, 1.0 / n), jnp.array(False)
+
+    @property
+    def likelihood_feature_dim(self) -> int:
+        return self.K
+
+    @property
+    def likelihood_feature_index(self) -> jax.Array:
+        return jnp.arange(self.K)
+
+    def likelihood_features(self, particles, observation, weights=None) -> jax.Array:
+        """(n, K) standardized residuals (y_k - x_k) / sigma_obs at the observed sites,
+        zero elsewhere and zero when no observation is present. Each column is a sufficient
+        statistic of that site's Gaussian likelihood factor."""
+        from nbf.filters.likelihood import RESIDUAL_CLIP
+
+        has_obs = observation.values[0] > _OBS_PRESENT_THRESHOLD
+        z = (observation.values - particles.x[:, self.obs_idx]) / observation.sigma_obs
+        z = jnp.clip(jnp.where(has_obs, z, 0.0), -RESIDUAL_CLIP, RESIDUAL_CLIP)
+        return jnp.zeros((particles.x.shape[0], self.K)).at[:, self.obs_idx].set(z)
+
     def state_array(self, state) -> jax.Array:
         return state.x
 
@@ -266,6 +287,11 @@ class Lorenz96Env(eqx.Module):
 
     def normalize_flat(self, array: jax.Array) -> jax.Array:
         return ((array - self.norm_mean) / self.norm_std).reshape(array.shape[0], -1)
+
+    def normalize_log_jacobian(self) -> jax.Array:
+        """log |dz/dx| of `normalize_flat`, so a density in normalized coordinates converts
+        to raw state units as log p_x(x) = log p_z(z) + normalize_log_jacobian()."""
+        return -self.K * jnp.log(self.norm_std)
 
     def observation_log_prob(self, array: jax.Array, observation) -> jax.Array:
         return -0.5 * jnp.sum(
