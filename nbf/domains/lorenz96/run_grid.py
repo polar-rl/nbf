@@ -312,18 +312,18 @@ def write_summaries(args, cell, subcells, methods, results):
         md_lines += [
             f'## {subcell} (sigma_obs {sigma_obs[0]}-{sigma_obs[1]})',
             '',
-            '| method | MMD$^2$ | LDS | AUC | RMSE | s/run |',
-            '|---|---|---|---|---|---|',
+            '| method | MMD$^2$ | NLL | LDS | AUC | RMSE | s/run |',
+            '|---|---|---|---|---|---|---|',
         ]
         tex_lines += [
             f'% {cell} {subcell}',
-            r'\begin{tabular}{lccccc}',
-            r'method & MMD$^2$ & LDS & AUC & RMSE & s/run \\',
+            r'\begin{tabular}{lcccccc}',
+            r'method & MMD$^2$ & NLL & LDS & AUC & RMSE & s/run \\',
             r'\hline',
         ]
         for spec in methods:
             row = {}
-            for metric in ('mmd', 'log_density_score', 'auc', 'rmse', 'walltime_s'):
+            for metric in ('mmd', 'nll', 'log_density_score', 'auc', 'rmse', 'walltime_s'):
                 pooled = _pool(results, subcell, spec, metric)
                 if pooled is None:
                     row[metric] = float('nan'), float('nan')
@@ -333,6 +333,7 @@ def write_summaries(args, cell, subcells, methods, results):
                     row[metric] = aggregate_mean_sem(pooled[:, args.t_min :])
             cells = [
                 f'{fmt_val(row["mmd"][0])} ± {fmt_val(row["mmd"][1])}',
+                f'{fmt_val(row["nll"][0])} ± {fmt_val(row["nll"][1])}',
                 fmt_val(row['log_density_score'][0]),
                 fmt_val(row['auc'][0]),
                 f'{fmt_val(row["rmse"][0])} ± {fmt_val(row["rmse"][1])}',
