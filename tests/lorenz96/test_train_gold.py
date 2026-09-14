@@ -77,7 +77,7 @@ def test_rollout_shapes_and_normalization(setup):
     cfg, env, model = setup
     tcfg = cfg.training
     B, T, n, K = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, env.K
-    for kind in ('nbf', 'nbf_op'):
+    for kind in ('pf', 'pf_op', 'nbf', 'nbf_op'):
         buffer, stats = collect_rollout(env, model, kind, tcfg, jax.random.PRNGKey(3))
         assert buffer['features'].shape == (B * (T + 1), n, K)
         assert buffer['weights'].shape == (B * (T + 1), n)
@@ -141,3 +141,36 @@ def test_train_step_reduces_gold_loss_on_fixed_batch(setup):
         model, opt_state, loss, _ = train_step(model, optimizer, opt_state, f, w, x, key)
     after = float(gold_loss(model, f, w, x, key)[0])
     assert after < before
+
+
+def test_pf_rollout_shapes_and_sanity(setup):
+    """Model-free sets: right layout, normalized weights, finite ESS, no divergence from the truth."""
+    from nbf.domains.lorenz96.train_gold import pf_rollout_particle_sets, weighted_mean_rmse
+
+    cfg, env, _ = setup
+    B, T, n = 8, env.time_limit, 256
+    eps = simulate_episodes(env, B, jax.random.PRNGKey(11))
+    state0, obs0, states_next, obs_prev, obs_next, x_all = eps
+    x_norm = (x_all - env.norm_mean) / env.norm_std
+    for kind in ('pf', 'pf_op'):
+        feats, ws, neffs = pf_rollout_particle_sets(
+            env,
+            kind,
+            n,
+            4096,
+            state0,
+            obs0,
+            states_next,
+            obs_prev,
+            obs_next,
+            jax.random.split(jax.random.PRNGKey(12), B),
+            jax.random.split(jax.random.PRNGKey(13), B * T).reshape(B, T, -1),
+        )
+        assert feats.shape == (B, T + 1, n, env.K) and neffs.shape == (B, T)
+        assert jnp.allclose(jnp.sum(ws, axis=-1), 1.0, atol=1e-4)
+        assert bool(jnp.all(jnp.isfinite(feats))) and bool(jnp.all(neffs >= 1.0))
+        rmse_prior = weighted_mean_rmse(feats[:, 0], ws[:, 0], x_norm[:, 0], env.norm_std)
+        rmse_late = weighted_mean_rmse(feats[:, -1], ws[:, -1], x_norm[:, -1], env.norm_std)
+        # The smoke env is too short for the posterior to beat the tight prior; only guard
+        # against a filter that has lost the truth.
+        assert rmse_late < 1.5 * rmse_prior, (kind, float(rmse_prior), float(rmse_late))

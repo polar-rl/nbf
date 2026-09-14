@@ -31,13 +31,16 @@ training:
   checkpoint_interval: 5000
   clip_grad_norm: 1.0
   seed: 0
-  # on-policy rollout settings
-  rollout_filter: mixed          # alternate NBF and NBF-OP rollouts; one model serves both rows
+  # rollout settings: on-policy (NBF rolled from the start of each episode with the
+  # current parameters). pf / pf_op / pf_mixed are the model-free alternative
+  # (reference-PF stand-in for the previous posterior), kept for the control arm.
+  rollout_filter: mixed          # alternate NBF and NBF-OP rollouts; one model serves both eval rows
   rollout_num_particles: 2048    # the deployment n
+  reference_num_particles: 65536 # model-free kinds only
   episodes_per_rollout: 64       # 64 x 21 = 1344 rows per rollout
   grad_steps_per_rollout: 40     # 40 x 256 = 10240 draws per rollout (~7.6 passes over the rows)
-  rollout_fm_steps: 10           # ODE steps during rollouts only; eval keeps 100
-  rollout_bf16: false
+  rollout_fm_steps: 10           # ODE steps during on-policy rollouts; eval keeps 100
+  rollout_bf16: true             # bf16 velocity net during rollouts (the eval --bf16_sampling path)
   norm_episodes: 512
   val_episodes: 64
   val_interval: 5000

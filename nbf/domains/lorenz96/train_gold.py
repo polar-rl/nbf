@@ -1,15 +1,31 @@
 """On-policy gold-state training for the Lorenz-96 NBF embedding.
 
 No stored particle corpus. Episodes (true states and observations) are simulated on
-the fly; the weighted particle sets the encoder sees are produced by running the NBF
-filter itself, with the current parameters, along each episode. The loss at every
-step is the generator objective (conditional flow matching for the FM generator, the
-exact NLL for a normalizing flow) evaluated at the single true state under the
-embedding of that step's particle set. Since (x_t, y_{1:t}) is a joint draw from the
-model, this is a proper scoring rule whose minimizer is p(x_t | particle set).
+the fly, and the weighted particle sets the encoder sees are produced along each
+episode by a filter rollout. The loss at every step is the generator objective
+(conditional flow matching for the FM generator, the exact NLL for a normalizing
+flow) evaluated at the single true state under the embedding of that step's set.
+Since (x_t, y_{1:t}) is a joint draw from the model, this is a proper scoring rule
+whose minimizer is p(x_t | particle set).
 
-The rollout is treated as data: gradients flow through `embed` and `generator.loss`
-for the step being scored, never through the filter chain that produced the set.
+Two rollout families produce the sets:
+
+* `nbf` / `nbf_op` (default, on-policy): the NBF filter itself, with the current
+  parameters, rolled from the start of each episode, produces the sets. Faithful to
+  deployment, including the compounding of the model's own errors down the episode,
+  at the price of a full filter rollout per cycle.
+* `pf` / `pf_op` (model-free, cheap): a reference particle filter with
+  `reference_num_particles` particles tracks the posterior along the episode. At each
+  step, `rollout_num_particles` fresh draws from the step t-1 reference posterior are
+  propagated and reweighted against y_t (blind proposal for `pf`, optimal proposal for
+  `pf_op`), and resampled when ESS < n/2, exactly the set NBF / NBF-OP would embed with
+  the reference posterior standing in for the generator. No network in the loop, but
+  the sets carry a PF's error shape rather than NBF's own; a control arm, not the
+  default.
+
+`*_mixed` alternates the blind and optimal-proposal variants so one checkpoint is
+trained for both eval rows. The rollout is treated as data: gradients flow through
+`embed` and `generator.loss` for the step being scored, never through the rollout.
 
 Design doc: agents/nbf/GOLD_STATE_TRAINING.md (polar-rl).
 """
@@ -32,13 +48,23 @@ from jax import Array
 from nbf.config import apply_overrides, build_dataclass
 from nbf.domains.lorenz96.config import DataConfig
 from nbf.domains.lorenz96.config import TrainingConfig as _L96TrainingConfig
-from nbf.domains.lorenz96.env import Lorenz96Env, build_lorenz96_env
+from nbf.domains.lorenz96.env import Lorenz96Env, build_lorenz96_env, rk4_window
 from nbf.eval.base import cast_velocity_net_bf16, env_rollout_batch
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
+from nbf.filters.particle import systematic_indices
 from nbf.train import _count_parameters
 
-ROLLOUT_FILTERS = ('nbf', 'nbf_op', 'mixed')
+ROLLOUT_FILTERS = ('pf', 'pf_op', 'pf_mixed', 'nbf', 'nbf_op', 'mixed')
+MODEL_FREE_KINDS = ('pf', 'pf_op')
+
+
+def rollout_kinds(rollout_filter: str) -> tuple[str, ...]:
+    if rollout_filter == 'pf_mixed':
+        return ('pf', 'pf_op')
+    if rollout_filter == 'mixed':
+        return ('nbf', 'nbf_op')
+    return (rollout_filter,)
 
 
 @dataclass
@@ -46,8 +72,9 @@ class GoldTrainingConfig(_L96TrainingConfig):
     # `batch_size` is the number of (particle set, true state) rows per gradient step.
     # `num_samples` is unused here (the set size is `rollout_num_particles`); kept for
     # dataclass compatibility with the base config.
-    rollout_filter: str = 'mixed'  # nbf | nbf_op | mixed (alternates per rollout)
+    rollout_filter: str = 'mixed'  # nbf | nbf_op | mixed (on-policy) | pf | pf_op | pf_mixed
     rollout_num_particles: int = 2048  # n at deployment; the encoder trains on exactly this
+    reference_num_particles: int = 65536  # reference PF size for the model-free rollouts
     episodes_per_rollout: int = 64
     grad_steps_per_rollout: int = 20
     rollout_fm_steps: int = 0  # 0 = the model's own fm_num_steps (eval-faithful, slow)
@@ -201,20 +228,111 @@ def rollout_particle_sets(
     )
 
 
+@eqx.filter_jit
+def pf_rollout_particle_sets(
+    env: Lorenz96Env,
+    kind: str,
+    num_particles: int,
+    reference_num_particles: int,
+    state0_b,
+    obs0_b,
+    states_next_b,
+    obs_prev_b,
+    obs_next_b,
+    reset_keys: Array,
+    step_keys_b: Array,
+):
+    """Model-free stand-in for `rollout_particle_sets`: same output layout.
+
+    A reference PF (N = `reference_num_particles`, same proposal as `kind`, systematic
+    resample every step) tracks the posterior. The training set at step t is n fresh
+    draws from the reference posterior at t-1, propagated and reweighted against y_t,
+    resampled when ESS < n/2, which is the set NBF embeds with the reference posterior
+    in place of the generator. Row 0 is the prior set, as in `reset_particles`.
+    """
+    optimal = kind == 'pf_op'
+    n, N, K = num_particles, reference_num_particles, env.K
+    obs_idx = env.obs_idx
+
+    def _prior(state0, key, count):
+        return state0.center + env.sigma_init * jax.random.normal(key, (count, K))
+
+    def _move_and_weight(x_prev, forcing, obs, key):
+        means = rk4_window(x_prev, forcing, env.dt, env.substeps, env.linear)
+        if optimal:
+            log_w = env.marginal_observation_log_prob(means, obs)
+            moved = env.conjugate_move(means, obs, key)
+        else:
+            moved = means + env.sigma_dyn * jax.random.normal(key, means.shape)
+            log_w = -0.5 * jnp.sum(((moved[:, obs_idx] - obs.values) / obs.sigma_obs) ** 2, -1)
+        log_w = jnp.where(jnp.isfinite(log_w), log_w, -jnp.inf)
+        return moved, jax.nn.softmax(log_w)
+
+    def _one(state0, obs0, states_next, obs_prev, obs_next, rkey, step_keys):
+        k_ref, k_row = jax.random.split(rkey)
+        ref_x = _prior(state0, k_ref, N)
+        ref_w = jnp.full(N, 1.0 / N)
+        row0 = _prior(state0, k_row, n)
+        w0 = jnp.full(n, 1.0 / n)
+        forcing = state0.forcing
+
+        def _step(carry, xs):
+            ref_x, ref_w = carry
+            sk, _state_t, _prev_obs, next_obs = xs
+            k_draw, k_move, k_res, k_ref_move, k_ref_res = jax.random.split(sk, 5)
+            # "generate": n fresh draws from the reference posterior at t-1
+            idx = jax.random.choice(k_draw, N, (n,), replace=True, p=ref_w)
+            moved, w = _move_and_weight(ref_x[idx], forcing, next_obs, k_move)
+            neff = 1.0 / jnp.sum(w**2)
+            res_idx = systematic_indices(w, k_res)
+            moved, w = jax.lax.cond(
+                neff < 0.5 * n,
+                lambda: (moved[res_idx], jnp.full(n, 1.0 / n)),
+                lambda: (moved, w),
+            )
+            # advance the reference posterior to t
+            ref_moved, ref_wt = _move_and_weight(ref_x, forcing, next_obs, k_ref_move)
+            ref_x = ref_moved[systematic_indices(ref_wt, k_ref_res)]
+            ref_w = jnp.full(N, 1.0 / N)
+            return (ref_x, ref_w), (moved, w, neff)
+
+        _, (xs_t, ws, neffs) = jax.lax.scan(
+            _step, (ref_x, ref_w), (step_keys, states_next, obs_prev, obs_next)
+        )
+        xs_all = jnp.concatenate([row0[None], xs_t], axis=0)
+        feats = (xs_all - env.norm_mean) / env.norm_std
+        ws = jnp.concatenate([w0[None], ws], axis=0)
+        return feats, ws, neffs
+
+    return jax.vmap(_one)(
+        state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b, reset_keys, step_keys_b
+    )
+
+
+def rollout_sets(env, rollout_model, kind, cfg: GoldTrainingConfig, eps, reset_keys, step_keys):
+    """Dispatch to the model-free or on-policy rollout; identical output layout."""
+    state0, obs0, states_next, obs_prev, obs_next, _ = eps
+    args = (state0, obs0, states_next, obs_prev, obs_next, reset_keys, step_keys)
+    if kind in MODEL_FREE_KINDS:
+        return pf_rollout_particle_sets(
+            env, kind, cfg.rollout_num_particles, cfg.reference_num_particles, *args
+        )
+    filt = make_filter(rollout_model, kind, cfg.rollout_num_particles)
+    return rollout_particle_sets(env, filt, *args)
+
+
 def collect_rollout(env, rollout_model, kind, cfg: GoldTrainingConfig, key: Array):
-    """Simulate a batch of episodes, roll the filter along them, flatten to training rows."""
+    """Simulate a batch of episodes, roll a filter along them, flatten to training rows."""
     ep_key, reset_key, step_key = jax.random.split(key, 3)
     B, T = cfg.episodes_per_rollout, env.time_limit
-    state0, obs0, states_next, obs_prev, obs_next, x_all = simulate_episodes(env, B, ep_key)
-    filt = make_filter(rollout_model, kind, cfg.rollout_num_particles)
-    feats, ws, neffs = rollout_particle_sets(
+    eps = simulate_episodes(env, B, ep_key)
+    x_all = eps[-1]
+    feats, ws, neffs = rollout_sets(
         env,
-        filt,
-        state0,
-        obs0,
-        states_next,
-        obs_prev,
-        obs_next,
+        rollout_model,
+        kind,
+        cfg,
+        eps,
         jax.random.split(reset_key, B),
         jax.random.split(step_key, B * T).reshape(B, T, -1),
     )
@@ -345,7 +463,7 @@ def run(cfg: GoldConfig) -> None:
     val_env = env
     val_eps = simulate_episodes(val_env, tcfg.val_episodes, val_key)
 
-    kinds = ('nbf', 'nbf_op') if tcfg.rollout_filter == 'mixed' else (tcfg.rollout_filter,)
+    kinds = rollout_kinds(tcfg.rollout_filter)
     log_path = os.path.join(cfg.save_path, 'train_log.jsonl')
     rollout_idx = step // tcfg.grad_steps_per_rollout
     t_start = time.time()
@@ -354,7 +472,11 @@ def run(cfg: GoldConfig) -> None:
         kind = kinds[rollout_idx % len(kinds)]
         # Keyed by rollout index so a resumed run replays the same episode stream.
         rk, tk, vk = jax.random.split(jax.random.fold_in(roll_key, rollout_idx), 3)
-        rmodel = rollout_model_from(model, cfg.model, tcfg.rollout_fm_steps, tcfg.rollout_bf16, rk)
+        rmodel = (
+            None
+            if kind in MODEL_FREE_KINDS
+            else rollout_model_from(model, cfg.model, tcfg.rollout_fm_steps, tcfg.rollout_bf16, rk)
+        )
 
         t0 = time.time()
         buffer, rstats = collect_rollout(env, rmodel, kind, tcfg, rk)
@@ -401,7 +523,12 @@ def run(cfg: GoldConfig) -> None:
         if tcfg.val_interval > 0 and (
             step % tcfg.val_interval < tcfg.grad_steps_per_rollout or step >= tcfg.num_iterations
         ):
-            record['val'] = validate(val_env, model, rmodel, val_eps, kinds, tcfg, vk)
+            vmodel = rmodel
+            if vmodel is None and any(k not in MODEL_FREE_KINDS for k in kinds):
+                vmodel = rollout_model_from(
+                    model, cfg.model, tcfg.rollout_fm_steps, tcfg.rollout_bf16, rk
+                )
+            record['val'] = validate(val_env, model, vmodel, val_eps, kinds, tcfg, vk)
 
         with open(log_path, 'a') as f:
             f.write(json.dumps(record) + '\n')
@@ -422,15 +549,12 @@ def validate(env, model, rollout_model, val_eps, kinds, tcfg, key):
     for i, kind in enumerate(kinds):
         k = jax.random.fold_in(key, 1000 + i)
         rk, sk, lk = jax.random.split(k, 3)
-        filt = make_filter(rollout_model, kind, tcfg.rollout_num_particles)
-        feats, ws, neffs = rollout_particle_sets(
+        feats, ws, neffs = rollout_sets(
             env,
-            filt,
-            state0,
-            obs0,
-            states_next,
-            obs_prev,
-            obs_next,
+            rollout_model,
+            kind,
+            tcfg,
+            val_eps,
             jax.random.split(rk, B),
             jax.random.split(sk, B * T).reshape(B, T, -1),
         )
