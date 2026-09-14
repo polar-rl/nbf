@@ -64,7 +64,7 @@ class NeuralBayesianFilter(eqx.Module):
         return particle_set, sampling_fallback, simulation_fallback
 
     @eqx.filter_jit
-    def update(
+    def update_particles(
         self,
         env: Environment,
         embedding: jax.Array,
@@ -73,7 +73,10 @@ class NeuralBayesianFilter(eqx.Module):
         action: int,
         next_observation: Observation,
         key: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[ParticleSet, jax.Array, jax.Array, jax.Array]:
+        # The particle half of `update()`: everything up to, but not including, the
+        # re-embedding. Exposed so training can see the exact weighted set the filter
+        # would embed at this step (on-policy gold-state training).
         # Generate a new gold state from the embedding so we can add it to the particle set
         # for the update without cheating. `update_with_ground_truth` puts the gold state in
         # directly, which is useful during search when we have already have a guess of the
@@ -88,11 +91,7 @@ class NeuralBayesianFilter(eqx.Module):
         neff = particle_set.neff()
 
         particle_set = self.maybe_resample(particle_set, resample_key)
-        features = jax.vmap(lambda p: p.to_flat_features())(particle_set.particles)
-
-        embedding = self.model.embed(features, particle_set.weights)[0]
-
-        return embedding, neff, sampling_fallback, simulation_fallback
+        return particle_set, neff, sampling_fallback, simulation_fallback
 
     def maybe_resample(self, particle_set: ParticleSet, key: jax.Array) -> ParticleSet:
         """Systematic resample when the effective sample size drops below half."""
@@ -101,6 +100,29 @@ class NeuralBayesianFilter(eqx.Module):
             lambda: particle_set.systematic_resample(key),
             lambda: particle_set,
         )
+
+    @eqx.filter_jit
+    def embed_particles(self, particle_set: ParticleSet) -> jax.Array:
+        features = jax.vmap(lambda p: p.to_flat_features())(particle_set.particles)
+        return self.model.embed(features, particle_set.weights)[0]
+
+    @eqx.filter_jit
+    def update(
+        self,
+        env: Environment,
+        embedding: jax.Array,
+        state: State,
+        observation: Observation,
+        action: int,
+        next_observation: Observation,
+        key: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        particle_set, neff, sampling_fallback, simulation_fallback = self.update_particles(
+            env, embedding, state, observation, action, next_observation, key
+        )
+        embedding = self.embed_particles(particle_set)
+
+        return embedding, neff, sampling_fallback, simulation_fallback
 
     @eqx.filter_jit
     def update_with_ground_truth(
@@ -131,9 +153,10 @@ class NeuralBayesianFilter(eqx.Module):
         return embedding, neff, sampling_fallback, simulation_fallback
 
     @eqx.filter_jit
-    def reset(
+    def reset_particles(
         self, env: Environment, state: State, observation: Observation, key: jax.Array
-    ) -> jax.Array:
+    ) -> tuple[jax.Array, jax.Array]:
+        # The prior particle set as (flat features, weights); `reset()` embeds it.
         keys = jax.random.split(key, self.num_particles)
         if getattr(env, 'has_prior_sampler', False):
             particles = jax.vmap(lambda k: env.sample_prior(state, k))(keys)
@@ -144,5 +167,11 @@ class NeuralBayesianFilter(eqx.Module):
             particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
         observations = jax.vmap(lambda p: p.observation_from_state())(particles)
         weights, _ = env.observation_weights(particles, observations, observation)
+        return features, weights
 
+    @eqx.filter_jit
+    def reset(
+        self, env: Environment, state: State, observation: Observation, key: jax.Array
+    ) -> jax.Array:
+        features, weights = self.reset_particles(env, state, observation, key)
         return self.model.embed(features, weights)[0]

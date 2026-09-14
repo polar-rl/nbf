@@ -48,7 +48,7 @@ class OptimalProposalNeuralBayesianFilter(NeuralBayesianFilter):
         return f'NBF-OP ({self.num_particles})'
 
     @eqx.filter_jit
-    def update(
+    def update_particles(
         self,
         env: Environment,
         embedding: jax.Array,
@@ -57,7 +57,7 @@ class OptimalProposalNeuralBayesianFilter(NeuralBayesianFilter):
         action: int,
         next_observation: Observation,
         key: jax.Array,
-    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+    ) -> tuple[ParticleSet, jax.Array, jax.Array, jax.Array]:
         missing = [h for h in _OP_HOOKS if not hasattr(env, h)]
         if missing:
             raise ValueError(f'OptimalProposalNeuralBayesianFilter requires env hooks: {missing}')
@@ -73,12 +73,23 @@ class OptimalProposalNeuralBayesianFilter(NeuralBayesianFilter):
             env, particles, weights, next_observation, move_key
         )
         neff = particle_set.neff()
-        particle_set = jax.lax.cond(
-            neff < self.num_particles * 0.5,
-            lambda: particle_set.systematic_resample(resample_key),
-            lambda: particle_set,
-        )
-        features = jax.vmap(lambda p: p.to_flat_features())(particle_set.particles)
-        embedding = self.model.embed(features, particle_set.weights)[0]
+        particle_set = self.maybe_resample(particle_set, resample_key)
+        return particle_set, neff, sampling_fallback, jnp.array(False)
 
-        return embedding, neff, sampling_fallback, jnp.array(False)
+    @eqx.filter_jit
+    def update(
+        self,
+        env: Environment,
+        embedding: jax.Array,
+        state: State,
+        observation: Observation,
+        action: int,
+        next_observation: Observation,
+        key: jax.Array,
+    ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
+        particle_set, neff, sampling_fallback, simulation_fallback = self.update_particles(
+            env, embedding, state, observation, action, next_observation, key
+        )
+        embedding = self.embed_particles(particle_set)
+
+        return embedding, neff, sampling_fallback, simulation_fallback

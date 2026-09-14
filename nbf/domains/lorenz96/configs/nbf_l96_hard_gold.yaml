@@ -1,0 +1,57 @@
+# Hard regime (window 0.4), K = 20, on-policy gold-state training. Same architecture
+# and data settings as nbf_l96_hard.yaml so the checkpoint is a drop-in for run_grid
+# --model_dir; only the training procedure differs (no corpus, no gold SMC).
+model:
+  input_dim: 20
+  output_dim: 20
+  embedding:
+    block_type: set_transformer
+    embedding_dim: 192
+    hidden_size: 512
+    num_rounds: 3
+    num_heads: 8
+    num_inducing: 64
+    pool_type: attention
+  generator:
+    flow_type: fm
+    conditioning: concat
+    fm_hidden_size: 512
+    fm_num_layers: 8
+    fm_time_embed_dim: 16
+    fm_num_steps: 100
+    fm_sigma_min: 1e-4
+
+training:
+  num_iterations: 100000
+  learning_rate: 1.0e-4
+  end_learning_rate: 1.0e-6
+  warmup_steps: 5000
+  batch_size: 256
+  log_interval: 100
+  checkpoint_interval: 5000
+  clip_grad_norm: 1.0
+  seed: 0
+  # on-policy rollout settings
+  rollout_filter: mixed          # alternate NBF and NBF-OP rollouts; one model serves both rows
+  rollout_num_particles: 2048    # the deployment n
+  episodes_per_rollout: 64       # 64 x 21 = 1344 rows per rollout
+  grad_steps_per_rollout: 20     # 20 x 256 = 5120 draws per rollout (~3.8 passes over the rows)
+  rollout_fm_steps: 20           # ODE steps during rollouts only; eval keeps 100
+  rollout_bf16: false
+  norm_episodes: 512
+  val_episodes: 64
+  val_interval: 5000
+
+data:
+  K: 20
+  episode_length: 20
+  dt: 0.01
+  window_substeps: 40
+  sigma_dyn: 0.25
+  sigma_obs_min: 0.5
+  sigma_obs_max: 1.1
+  f_bands: [[5.0, 7.0], [9.0, 11.0]]
+  spinup_time: 10.0
+  sigma_init: 2.0
+
+save_path: results/k20/nbf_hard_gold/
