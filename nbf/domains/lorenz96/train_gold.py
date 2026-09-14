@@ -332,6 +332,12 @@ def run(cfg: GoldConfig) -> None:
         with open(os.path.join(cfg.save_path, f'{name}.json'), 'w') as f:
             json.dump(asdict(obj), f, indent=2)
 
+    if tcfg.warmup_steps >= tcfg.num_iterations:
+        # An ITERS override on a smoke run would otherwise hand optax a negative cosine
+        # decay; a short run gets a proportionally short warmup instead.
+        clamped = max(1, tcfg.num_iterations // 10)
+        print(f'[warmup] warmup_steps {tcfg.warmup_steps} >= num_iterations, using {clamped}')
+        tcfg.warmup_steps = clamped
     optimizer, opt_state = init_optimizer(model, tcfg)
     model, opt_state, step = _try_resume(cfg.save_path, model, opt_state)
 

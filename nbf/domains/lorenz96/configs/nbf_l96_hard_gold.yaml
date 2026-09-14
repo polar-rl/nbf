@@ -35,8 +35,8 @@ training:
   rollout_filter: mixed          # alternate NBF and NBF-OP rollouts; one model serves both rows
   rollout_num_particles: 2048    # the deployment n
   episodes_per_rollout: 64       # 64 x 21 = 1344 rows per rollout
-  grad_steps_per_rollout: 20     # 20 x 256 = 5120 draws per rollout (~3.8 passes over the rows)
-  rollout_fm_steps: 20           # ODE steps during rollouts only; eval keeps 100
+  grad_steps_per_rollout: 40     # 40 x 256 = 10240 draws per rollout (~7.6 passes over the rows)
+  rollout_fm_steps: 10           # ODE steps during rollouts only; eval keeps 100
   rollout_bf16: false
   norm_episodes: 512
   val_episodes: 64
