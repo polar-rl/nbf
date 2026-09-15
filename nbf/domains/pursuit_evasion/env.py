@@ -315,6 +315,10 @@ class PursuitEvasionEnv(eqx.Module):
     def normalize_flat(self, array: jax.Array) -> jax.Array:
         return normalize_positions(array).reshape(array.shape[0], -1)
 
+    def normalize_log_jacobian(self) -> jax.Array:
+        """log |dz/dx| of `normalize_flat` (z = (x - L/2) / (L/2) per coordinate)."""
+        return -2.0 * self.num_evaders * jnp.log(0.5 * L)
+
     def observation_log_prob(self, array: jax.Array, observation) -> jax.Array:
         sigma = observation.observation_sigma
         pred_ranges = jnp.linalg.norm(array - SENSOR_POS, axis=-1)  # (N, k)

@@ -242,3 +242,15 @@ class TestMultiEvader:
         w, _ = env_p.observation_weights(particles, obs, obs)
         w_perm, _ = env_p.observation_weights(particles, obs_perm, obs_perm)
         assert jnp.allclose(w, w_perm, atol=1e-5)
+
+
+def test_normalize_log_jacobian_matches_change_of_variables():
+    from nbf.domains.pursuit_evasion.env import L
+
+    env = PursuitEvasionEnv(num_evaders=2, time_limit=5)
+    x = jnp.array([[[1.0, 2.0], [7.5, 9.0]]])  # (1, k, 2) raw positions
+    z = env.normalize_flat(x)[0]
+    logp_z = -0.5 * jnp.sum(z**2) - 0.5 * 4 * jnp.log(2 * jnp.pi)
+    logp_x = logp_z + env.normalize_log_jacobian()
+    expected = jax.scipy.stats.norm.logpdf(x.reshape(-1), loc=0.5 * L, scale=0.5 * L).sum()
+    assert jnp.allclose(logp_x, expected, atol=1e-5)

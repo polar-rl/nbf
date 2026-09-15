@@ -8,11 +8,16 @@ from nbf.filters.particle import ParticleFilter
 
 @eqx.filter_jit
 def _nbf_density_step(model, embedding, env, x_true: Array) -> Array:
-    """Log-density of the model's belief at the true state (the reference-free score)."""
+    """Log-density of the model's belief at the true state, in raw state units.
+
+    The generator's density lives in the model's normalized coordinates; the
+    change-of-variables term `env.normalize_log_jacobian()` converts it so NLLs are
+    comparable with methods whose densities are defined on the raw state (EnKF, GMF).
+    """
     pts_norm = env.normalize_flat(x_true[None])
     logp_out = model.log_prob(pts_norm, embedding)
     logps = logp_out[0] if isinstance(logp_out, tuple) else logp_out
-    return logps[0]
+    return logps[0] + env.normalize_log_jacobian()
 
 
 @eqx.filter_jit

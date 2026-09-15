@@ -267,6 +267,11 @@ class Lorenz96Env(eqx.Module):
     def normalize_flat(self, array: jax.Array) -> jax.Array:
         return ((array - self.norm_mean) / self.norm_std).reshape(array.shape[0], -1)
 
+    def normalize_log_jacobian(self) -> jax.Array:
+        """log |dz/dx| of `normalize_flat`, so a density in normalized coordinates converts
+        to raw state units as log p_x(x) = log p_z(z) + normalize_log_jacobian()."""
+        return -self.K * jnp.log(self.norm_std)
+
     def observation_log_prob(self, array: jax.Array, observation) -> jax.Array:
         return -0.5 * jnp.sum(
             ((array[:, self.obs_idx] - observation.values) / observation.sigma_obs) ** 2,
