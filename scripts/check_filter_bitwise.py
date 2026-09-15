@@ -13,12 +13,12 @@ import numpy as np
 from embedex.distributions.builder import create_model
 
 from nbf.domains.lorenz96.env import build_lorenz96_env
-from nbf.domains.lorenz96.train_gold import load_config, simulate_episodes
+from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
 
 SMOKE = os.path.join(
-    os.path.dirname(__file__), '..', 'nbf', 'domains', 'lorenz96', 'configs', 'smoke_l96_gold.yaml'
+    os.path.dirname(__file__), '..', 'nbf', 'domains', 'lorenz96', 'configs', 'smoke_l96.yaml'
 )
 
 
@@ -35,10 +35,12 @@ def main() -> None:
     env = build_lorenz96_env(cfg.data)
     cfg.model.input_dim = cfg.model.output_dim = cfg.data.K
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
-    state0, obs0, states_next, obs_prev, obs_next, _ = simulate_episodes(env, 1, jax.random.PRNGKey(1))
+    eps = simulate_episodes(env, 1, jax.random.PRNGKey(1))
     one = lambda t: jax.tree.map(lambda x: x[0], t)  # noqa: E731
-    s0, o0 = one(state0), one(obs0)
-    st, op, on = (jax.tree.map(lambda x: x[0, 0], t) for t in (states_next, obs_prev, obs_next))
+    s0, o0 = one(eps.state0), one(eps.obs0)
+    st, op, on = (
+        jax.tree.map(lambda x: x[0, 0], t) for t in (eps.states_next, eps.obs_prev, eps.obs_next)
+    )
     for cls in (NeuralBayesianFilter, OptimalProposalNeuralBayesianFilter):
         filt = cls(model, 32)
         emb = filt.reset(env, s0, o0, jax.random.PRNGKey(2))

@@ -1,3 +1,5 @@
+# Pursuit-evasion, k = 3 evaders, on-policy training (episodes simulated on the fly
+# under policies drawn from the training mixture; no PF corpus).
 model:
   input_dim: 6
   output_dim: 6
@@ -18,26 +20,28 @@ model:
     fm_sigma_min: 1e-4
 
 training:
-  num_iterations: 250000
+  num_iterations: 100000
   learning_rate: 1.0e-4
   end_learning_rate: 1.0e-6
   warmup_steps: 5000
   batch_size: 256
-  num_samples: 2048
   log_interval: 100
-  checkpoint_interval: 10000
+  checkpoint_interval: 5000
   clip_grad_norm: 1.0
   seed: 0
+  # On-policy rollouts: the NBF filter itself, current parameters. Pursuit-evasion has
+  # no closed-form optimal proposal (range-only sensor), so bootstrap only.
+  rollout_proposals: [bootstrap]
+  rollout_num_particles: 2048
+  episodes_per_rollout: 64
+  grad_steps_per_rollout: 40
+  rollout_fm_steps: 10
+  rollout_bf16: false
+  val_episodes: 64
+  val_interval: 5000
 
 data:
   num_evaders: 3
-  num_episodes_per_policy: 75
   episode_length: 20
-  num_policies: 1000
-  num_pf_particles: 100000
-  shuffle_observations: true
-  interaction_radius: 1.5
-  interaction_strength: 1.0
 
-data_path: data/pursuit_evasion/
 save_path: results/pursuit_evasion/k3/nbf/

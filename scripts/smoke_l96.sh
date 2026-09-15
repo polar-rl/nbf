@@ -11,14 +11,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
-CONFIG="nbf/domains/lorenz96/configs/smoke_l96_gold.yaml"
-MODEL_DIR="results/lorenz96/smoke_gold"
-OUT_DIR="results/lorenz96/smoke_gold/eval"
+CONFIG="nbf/domains/lorenz96/configs/smoke_l96.yaml"
+MODEL_DIR="results/lorenz96/smoke"
+OUT_DIR="results/lorenz96/smoke/eval"
 
 export NBF_NUM_REF_SAMPLES=64
 
 echo "=== [1/2] Train (on-policy, no corpus) ==="
-python -m nbf.domains.lorenz96.train_gold --config "$CONFIG" --set "save_path=$MODEL_DIR/"
+python -m nbf.domains.lorenz96.train --config "$CONFIG" --set "save_path=$MODEL_DIR/"
 
 test -f "$MODEL_DIR/model.eqx" || { echo "FAIL: missing $MODEL_DIR/model.eqx"; exit 1; }
 test -f "$MODEL_DIR/model_config.json" || { echo "FAIL: missing $MODEL_DIR/model_config.json"; exit 1; }

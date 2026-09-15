@@ -8,18 +8,17 @@ from embedex.distributions.builder import create_model
 from embedex.distributions.training import init_optimizer
 
 from nbf.domains.lorenz96.env import build_lorenz96_env
-from nbf.domains.lorenz96.train_gold import (
+from nbf.domains.lorenz96.train import load_config, simulate_episodes
+from nbf.filters.nbf import NeuralBayesianFilter
+from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
+from nbf.train import (
     collect_rollout,
     gold_loss,
-    load_config,
     make_filter,
     rollout_model_from,
     rollout_particle_sets,
-    simulate_episodes,
     train_step,
 )
-from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
 
 SMOKE = os.path.join(
     os.path.dirname(__file__),
@@ -29,7 +28,7 @@ SMOKE = os.path.join(
     'domains',
     'lorenz96',
     'configs',
-    'smoke_l96_gold.yaml',
+    'smoke_l96.yaml',
 )
 
 
@@ -45,21 +44,26 @@ def setup():
     return cfg, env, model
 
 
-def test_config_rejects_unknown_rollout_filter():
+def test_config_rejects_unknown_proposal():
     with pytest.raises(ValueError):
-        load_config(SMOKE, ['training.rollout_filter=bogus'])
+        load_config(SMOKE, ['training.rollout_proposals=bogus'])
+
+
+def test_config_accepts_comma_separated_proposals():
+    cfg = load_config(SMOKE, ['training.rollout_proposals=optimal,bootstrap'])
+    assert cfg.training.rollout_proposals == ['optimal', 'bootstrap']
 
 
 @pytest.mark.parametrize('cls', [NeuralBayesianFilter, OptimalProposalNeuralBayesianFilter])
 def test_update_is_update_particles_then_embed(setup, cls):
     _, env, model = setup
     filt = cls(model, num_particles=32)
-    state0, obs0, states_next, obs_prev, obs_next, _ = simulate_episodes(
-        env, 1, jax.random.PRNGKey(1)
-    )
+    eps = simulate_episodes(env, 1, jax.random.PRNGKey(1))
     one = lambda t: jax.tree.map(lambda x: x[0], t)  # noqa: E731
-    s0, o0 = one(state0), one(obs0)
-    st, op, on = (jax.tree.map(lambda x: x[0, 0], t) for t in (states_next, obs_prev, obs_next))
+    s0, o0 = one(eps.state0), one(eps.obs0)
+    st, op, on = (
+        jax.tree.map(lambda x: x[0, 0], t) for t in (eps.states_next, eps.obs_prev, eps.obs_next)
+    )
 
     rkey, ukey = jax.random.split(jax.random.PRNGKey(2))
     emb0 = filt.reset(env, s0, o0, rkey)
@@ -77,8 +81,10 @@ def test_rollout_shapes_and_normalization(setup):
     cfg, env, model = setup
     tcfg = cfg.training
     B, T, n, K = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, env.K
-    for kind in ('pf', 'pf_op', 'nbf', 'nbf_op'):
-        buffer, stats = collect_rollout(env, model, kind, tcfg, jax.random.PRNGKey(3))
+    for proposal in ('bootstrap', 'optimal'):
+        buffer, stats = collect_rollout(
+            env, model, proposal, tcfg, simulate_episodes, jax.random.PRNGKey(3)
+        )
         assert buffer['features'].shape == (B * (T + 1), n, K)
         assert buffer['weights'].shape == (B * (T + 1), n)
         assert buffer['x_true'].shape == (B * (T + 1), K)
@@ -91,9 +97,10 @@ def test_rollout_shapes_and_normalization(setup):
 def test_rollout_row_zero_is_the_prior_set(setup):
     cfg, env, model = setup
     n = cfg.training.rollout_num_particles
-    filt = make_filter(model, 'nbf', n)
-    state0, obs0, states_next, obs_prev, obs_next, _ = simulate_episodes(
-        env, 2, jax.random.PRNGKey(4)
+    filt = make_filter(model, 'bootstrap', n)
+    eps = simulate_episodes(env, 2, jax.random.PRNGKey(4))
+    state0, obs0, states_next, obs_prev, obs_next = (
+        eps.state0, eps.obs0, eps.states_next, eps.obs_prev, eps.obs_next
     )
     rkeys = jax.random.split(jax.random.PRNGKey(5), 2)
     skeys = jax.random.split(jax.random.PRNGKey(6), 2 * env.time_limit).reshape(
@@ -129,7 +136,7 @@ def test_rollout_model_shares_params_and_changes_steps(setup):
 def test_train_step_reduces_gold_loss_on_fixed_batch(setup):
     cfg, env, model = setup
     tcfg = cfg.training
-    buffer, _ = collect_rollout(env, model, 'nbf_op', tcfg, jax.random.PRNGKey(9))
+    buffer, _ = collect_rollout(env, model, 'optimal', tcfg, simulate_episodes, jax.random.PRNGKey(9))
     idx = jnp.arange(min(16, buffer['x_true'].shape[0]))
     f, w, x = buffer['features'][idx], buffer['weights'][idx], buffer['x_true'][idx]
     key = jax.random.PRNGKey(10)
@@ -141,36 +148,3 @@ def test_train_step_reduces_gold_loss_on_fixed_batch(setup):
         model, opt_state, loss, _ = train_step(model, optimizer, opt_state, f, w, x, key)
     after = float(gold_loss(model, f, w, x, key)[0])
     assert after < before
-
-
-def test_pf_rollout_shapes_and_sanity(setup):
-    """Model-free sets: right layout, normalized weights, finite ESS, no divergence from the truth."""
-    from nbf.domains.lorenz96.train_gold import pf_rollout_particle_sets, weighted_mean_rmse
-
-    cfg, env, _ = setup
-    B, T, n = 8, env.time_limit, 256
-    eps = simulate_episodes(env, B, jax.random.PRNGKey(11))
-    state0, obs0, states_next, obs_prev, obs_next, x_all = eps
-    x_norm = (x_all - env.norm_mean) / env.norm_std
-    for kind in ('pf', 'pf_op'):
-        feats, ws, neffs = pf_rollout_particle_sets(
-            env,
-            kind,
-            n,
-            4096,
-            state0,
-            obs0,
-            states_next,
-            obs_prev,
-            obs_next,
-            jax.random.split(jax.random.PRNGKey(12), B),
-            jax.random.split(jax.random.PRNGKey(13), B * T).reshape(B, T, -1),
-        )
-        assert feats.shape == (B, T + 1, n, env.K) and neffs.shape == (B, T)
-        assert jnp.allclose(jnp.sum(ws, axis=-1), 1.0, atol=1e-4)
-        assert bool(jnp.all(jnp.isfinite(feats))) and bool(jnp.all(neffs >= 1.0))
-        rmse_prior = weighted_mean_rmse(feats[:, 0], ws[:, 0], x_norm[:, 0], env.norm_std)
-        rmse_late = weighted_mean_rmse(feats[:, -1], ws[:, -1], x_norm[:, -1], env.norm_std)
-        # The smoke env is too short for the posterior to beat the tight prior; only guard
-        # against a filter that has lost the truth.
-        assert rmse_late < 1.5 * rmse_prior, (kind, float(rmse_prior), float(rmse_late))

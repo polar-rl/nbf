@@ -1,6 +1,6 @@
 # Hard regime (window 0.4), K = 40, on-policy gold-state training (2026-09-15).
-# Copy of nbf_l96_hard_gold.yaml with K doubled; embedding_dim 192 -> 256 for the
-# doubled input, everything else unchanged. Eval needs the oracle-free run_grid path.
+# Copy of nbf_l96_hard_k20.yaml with K doubled; embedding_dim 192 -> 256 for the
+# doubled input, everything else unchanged.
 model:
   input_dim: 40
   output_dim: 40
@@ -31,12 +31,10 @@ training:
   checkpoint_interval: 5000
   clip_grad_norm: 1.0
   seed: 0
-  # rollout settings: on-policy (NBF rolled from the start of each episode with the
-  # current parameters). pf / pf_op / pf_mixed are the model-free alternative
-  # (reference-PF stand-in for the previous posterior), kept for the control arm.
-  rollout_filter: mixed          # alternate NBF and NBF-OP rollouts; one model serves both eval rows
+  # On-policy rollouts: the NBF filter itself, current parameters, alternating the
+  # listed proposals per rollout so one checkpoint serves every eval row.
+  rollout_proposals: [bootstrap, optimal]
   rollout_num_particles: 2048    # the deployment n
-  reference_num_particles: 65536 # model-free kinds only
   episodes_per_rollout: 64       # 64 x 21 = 1344 rows per rollout
   grad_steps_per_rollout: 40     # 40 x 256 = 10240 draws per rollout (~7.6 passes over the rows)
   rollout_fm_steps: 10           # ODE steps during on-policy rollouts; eval keeps 100
@@ -57,4 +55,4 @@ data:
   spinup_time: 10.0
   sigma_init: 2.0
 
-save_path: results/k40/nbf_hard_gold/
+save_path: results/k40/nbf_hard/

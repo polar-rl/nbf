@@ -1,12 +1,12 @@
-# Hard regime (window 0.4), K = 20, on-policy gold-state training. Same architecture
-# and data settings as nbf_l96_hard.yaml so the checkpoint is a drop-in for run_grid
-# --model_dir; only the training procedure differs (no corpus, no gold SMC).
+# Easy regime (window 0.05), K = 40, on-policy gold-state training (2026-09-15).
+# Copy of nbf_l96_hard_k20.yaml with K doubled; embedding_dim 192 -> 256 for the
+# doubled input, everything else unchanged.
 model:
-  input_dim: 20
-  output_dim: 20
+  input_dim: 40
+  output_dim: 40
   embedding:
     block_type: set_transformer
-    embedding_dim: 192
+    embedding_dim: 256
     hidden_size: 512
     num_rounds: 3
     num_heads: 8
@@ -31,12 +31,10 @@ training:
   checkpoint_interval: 5000
   clip_grad_norm: 1.0
   seed: 0
-  # rollout settings: on-policy (NBF rolled from the start of each episode with the
-  # current parameters). pf / pf_op / pf_mixed are the model-free alternative
-  # (reference-PF stand-in for the previous posterior), kept for the control arm.
-  rollout_filter: mixed          # alternate NBF and NBF-OP rollouts; one model serves both eval rows
+  # On-policy rollouts: the NBF filter itself, current parameters, alternating the
+  # listed proposals per rollout so one checkpoint serves every eval row.
+  rollout_proposals: [bootstrap, optimal]
   rollout_num_particles: 2048    # the deployment n
-  reference_num_particles: 65536 # model-free kinds only
   episodes_per_rollout: 64       # 64 x 21 = 1344 rows per rollout
   grad_steps_per_rollout: 40     # 40 x 256 = 10240 draws per rollout (~7.6 passes over the rows)
   rollout_fm_steps: 10           # ODE steps during on-policy rollouts; eval keeps 100
@@ -46,10 +44,10 @@ training:
   val_interval: 5000
 
 data:
-  K: 20
+  K: 40
   episode_length: 20
   dt: 0.01
-  window_substeps: 40
+  window_substeps: 5
   sigma_dyn: 0.25
   sigma_obs_min: 0.5
   sigma_obs_max: 1.1
@@ -57,4 +55,4 @@ data:
   spinup_time: 10.0
   sigma_init: 2.0
 
-save_path: results/k20/nbf_hard_gold/
+save_path: results/k40/nbf_easy/
