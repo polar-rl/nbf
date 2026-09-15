@@ -59,8 +59,9 @@ def normalize_proposals(cfg: OnPolicyTrainingConfig) -> None:
     """Accept `a,b` from a --set override as well as a YAML list; validate the names."""
     props = cfg.rollout_proposals
     if isinstance(props, str):
-        props = [p.strip() for p in props.split(',') if p.strip()]
-    props = [str(p) for p in props]
+        props = [props]
+    # apply_overrides hands a `--set training.rollout_proposals=a,b` through as ['a,b'].
+    props = [q.strip() for p in props for q in str(p).split(',') if q.strip()]
     unknown = [p for p in props if p not in PROPOSALS]
     if not props or unknown:
         raise ValueError(
