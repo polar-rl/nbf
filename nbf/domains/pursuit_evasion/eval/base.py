@@ -1,7 +1,4 @@
-import equinox as eqx
-import jax
 import jax.numpy as jnp
-from jax import Array
 
 from nbf.domains.pursuit_evasion.env import (
     SENSOR_POS,
@@ -44,11 +41,4 @@ def make_env_kn(k: int, episode_length: int, policy_tuple) -> PursuitEvasionEnv:
         time_limit=episode_length,
         policy=policy_tuple,
         shuffle_observations=True,
-    )
-
-
-@eqx.filter_jit
-def sample_background_batch(keys_b: Array, M: int, k: int) -> Array:
-    return jax.vmap(jax.vmap(lambda kk: jax.random.uniform(kk, (M, k, 2), minval=0.0, maxval=L)))(
-        keys_b
     )

@@ -7,8 +7,6 @@ from nbf.eval.base import chunk_bounds, chunked_stream, parse_method_spec, run_c
 from nbf.eval.metrics import (
     coverage_per_step_batch,
     crps_per_step_batch,
-    mmd2_multibw_per_step_batch,
-    mmd2_multibw_per_step_chunked,
     rmse_per_step_batch,
     sample_metrics_per_step,
     spread_per_step_batch,
@@ -19,7 +17,6 @@ class TestParseMethodSpec:
     @pytest.mark.parametrize(
         ('spec', 'expected'),
         [
-            ('pf_oracle', ('pf_oracle', 0)),
             ('nbf_256', ('nbf', 256)),
             ('pf_8192', ('pf', 8192)),
             ('gmf_4', ('gmf', 4)),
@@ -161,15 +158,3 @@ class TestRunChunked:
         got = np.asarray(chunked_stream(stream, (tree,), (keys,), (2.0,), 8, 3))
         assert np.array_equal(got, full)
 
-
-class TestMmdChunking:
-    def test_chunked_matches_batched(self):
-        key = jax.random.PRNGKey(0)
-        k1, k2 = jax.random.split(key)
-        method = jax.random.normal(k1, (5, 3, 64, 4))
-        oracle = jax.random.normal(k2, (5, 3, 64, 4)) + 0.3
-        full = np.asarray(mmd2_multibw_per_step_batch(method, oracle))
-        for cs in (1, 2, 5, 0):
-            got = np.asarray(mmd2_multibw_per_step_chunked(method, oracle, chunk_size=cs))
-            assert got.shape == (5, 3)
-            assert np.allclose(got, full, rtol=1e-3, atol=1e-5), cs

@@ -4,11 +4,8 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-from nbf.eval.base import run_chunked
-from nbf.metrics import median_heuristic, mmd2_u, rbf_kernel
 
-DENSITY_METRIC_NAMES = ('log_density_score', 'nll', 'auc')
-_MULTIBW_SCALES = (0.25, 0.5, 1.0, 2.0, 4.0)
+DENSITY_METRIC_NAMES = ('nll',)
 
 
 def aggregate_mean_sem(arr_NT: np.ndarray) -> tuple[float, float]:
@@ -41,66 +38,14 @@ def aggregate_per_step_mean_sem(arr_NT: np.ndarray) -> tuple[np.ndarray, np.ndar
     return mean, se
 
 
-def density_metrics_from_logps(logp_pos: Array, logp_neg: Array) -> dict[str, Array]:
-    M = logp_neg.shape[-1]
-    logdens = logp_pos - jax.scipy.special.logsumexp(logp_neg, axis=-1) + jnp.log(M)
-    nll = -logp_pos
-    auc = jnp.mean((logp_pos[..., None] > logp_neg).astype(jnp.float32), axis=-1)
-    return {'log_density_score': logdens, 'nll': nll, 'auc': auc}
+def density_metrics_from_logp(logp_true: Array) -> dict[str, Array]:
+    """Reference-free density score: the NLL of the true state under the method's belief.
 
-
-@eqx.filter_jit
-def mmd2_per_step_batch(method_samples: Array, oracle_samples: Array) -> Array:
-
-    def _step(m, o):
-        m_flat = m.reshape(m.shape[0], -1)
-        o_flat = o.reshape(o.shape[0], -1)
-        sigma = median_heuristic(o_flat) + 1e-6
-        return mmd2_u(m_flat, o_flat, rbf_kernel(sigma))
-
-    def _per_episode(mo):
-        m, o = mo
-        return jax.vmap(_step)(m, o)
-
-    return jax.lax.map(_per_episode, (method_samples, oracle_samples))
-
-
-def _multibw_rbf_kernel(sigma: float, scales=_MULTIBW_SCALES):
-    inv_factors = tuple(1.0 / (2.0 * (sigma * s) ** 2) for s in scales)
-
-    def _k(x, y):
-        diff = x[:, None, :] - y[None, :, :]
-        d2 = jnp.sum(diff * diff, axis=-1)
-        return sum(jnp.exp(-inv * d2) for inv in inv_factors)
-
-    return _k
-
-
-@eqx.filter_jit
-def mmd2_multibw_per_step_batch(method_samples: Array, oracle_samples: Array) -> Array:
-
-    def _step(m, o):
-        m_flat = m.reshape(m.shape[0], -1)
-        o_flat = o.reshape(o.shape[0], -1)
-        sigma = median_heuristic(o_flat) + 1e-6
-        return mmd2_u(m_flat, o_flat, _multibw_rbf_kernel(sigma))
-
-    return jax.vmap(jax.vmap(_step))(method_samples, oracle_samples)
-
-
-def mmd2_multibw_per_step_chunked(
-    method_samples,
-    oracle_samples,
-    *,
-    chunk_size: int = 0,
-    desc: str | None = None,
-):
-    def _run(start: int, stop: int) -> Array:
-        return mmd2_multibw_per_step_batch(
-            jnp.asarray(method_samples[start:stop]), jnp.asarray(oracle_samples[start:stop])
-        )
-
-    return run_chunked(_run, method_samples.shape[0], chunk_size, desc=desc)
+    x_t is one exact draw from p(x_t | y_{1:t}), so the mean NLL over episodes is the
+    posterior entropy plus the expected KL(p || q); differences between methods are
+    differences in expected KL.
+    """
+    return {'nll': -logp_true}
 
 
 @eqx.filter_jit
@@ -182,9 +127,3 @@ def sample_metrics_per_step(method_samples: Array, truth_states: Array) -> dict[
             coverage_per_step_batch(method_samples, truth_states, level)
         )
     return out
-
-
-METRIC_FNS = {
-    'mmd': mmd2_per_step_batch,
-    'mmd_multibw': mmd2_multibw_per_step_batch,
-}

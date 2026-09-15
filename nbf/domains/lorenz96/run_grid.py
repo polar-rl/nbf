@@ -14,7 +14,6 @@ from nbf.domains.lorenz96.eval_utils import (  # noqa: E402
     L96_EXTRA_SAMPLERS,
     compute_method_samples,
     compute_method_samples_and_density,
-    sample_l96_negatives_batch,
 )
 from nbf.eval._tex import fmt_val, latex_escape  # noqa: E402
 from nbf.eval.base import (  # noqa: E402
@@ -24,10 +23,7 @@ from nbf.eval.base import (  # noqa: E402
     parse_seeds,
     rollout_episodes,
 )
-from nbf.eval.dispatch import (  # noqa: E402
-    NUM_NEGATIVES,
-    NUM_REF_SAMPLES,
-)
+from nbf.eval.dispatch import NUM_REF_SAMPLES  # noqa: E402
 from nbf.eval.metrics import (  # noqa: E402
     aggregate_mean_sem,
     sample_metrics_per_step,
@@ -56,7 +52,9 @@ DEFAULT_METHODS = (
     'enkf_20,enkf_50,enkf_100'
 )
 
-DENSITY_KINDS = ('nbf', 'nbf_op', 'pf', 'pf_reg', 'pf_rm', 'enkf')
+# Methods with a native density, scored by the NLL of the true state. Particle
+# filters have none and get sample metrics only.
+DENSITY_KINDS = ('nbf', 'nbf_op', 'enkf')
 
 
 def make_cell_env(data_cfg, f_bands, sigma_obs, episode_length: int) -> Lorenz96Env:
@@ -141,14 +139,11 @@ def run_subcell(
 ):
     env = make_cell_env(data_cfg, f_bands, sigma_obs, args.episode_length)
     key = jax.random.PRNGKey(seed)
-    # Four-way split kept so method keys match grids run before the oracle was removed.
-    rollout_key, _oracle_key, _oracle2_key, neg_key = jax.random.split(key, 4)
+    # Four-way split kept so episode and method keys match grids run before the
+    # oracle and the negatives were removed.
+    rollout_key, _, _, _ = jax.random.split(key, 4)
     state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = rollout_episodes(
         env, args.episode_length, args.num_episodes, rollout_key
-    )
-    N, T = args.num_episodes, args.episode_length
-    neg_pts_b = sample_l96_negatives_batch(
-        env, jax.random.split(neg_key, N * T).reshape(N, T, -1), args.num_negatives
     )
 
     out = {}
@@ -164,13 +159,11 @@ def run_subcell(
                 env=env,
                 embedding_model=sampling_model,
                 density_model=density_model,
-                k=data_cfg.K,
                 state0_b=state0_b,
                 obs0_b=obs0_b,
                 states_next_b=states_next_b,
                 obs_prev_b=obs_prev_b,
                 obs_next_b=obs_next_b,
-                neg_pts_b=neg_pts_b,
                 num_ref_samples=args.num_ref_samples,
                 key=method_key,
                 chunk_size=args.chunk_size,
@@ -331,7 +324,6 @@ def main() -> None:
     parser.add_argument('--num_seeds', type=int, default=0)
     parser.add_argument('--seed', type=int, default=0)
     parser.add_argument('--num_ref_samples', type=int, default=NUM_REF_SAMPLES)
-    parser.add_argument('--num_negatives', type=int, default=NUM_NEGATIVES)
     parser.add_argument('--timing_repeats', type=int, default=0)
     parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
     parser.add_argument(
@@ -346,7 +338,7 @@ def main() -> None:
         type=int,
         default=0,
         help='override flow ODE steps for the sampling/filter path only '
-        '(0 = keep model config; log_prob for LDS/NLL/AUC always uses the config value)',
+        '(0 = keep model config; log_prob for the NLL always uses the config value)',
     )
     parser.add_argument(
         '--bf16_sampling',

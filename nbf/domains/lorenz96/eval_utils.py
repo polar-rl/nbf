@@ -21,15 +21,10 @@ from nbf.eval.samples import (
     nbf_reference_sample_stream_batch,
     nbf_samples_density_stream_batch,
     pf_reference_sample_stream_batch,
-    pf_samples_density_stream_batch,
 )
 from nbf.filters.enkf import EnsembleKalmanFilter, ring_taper
 from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
-from nbf.filters.particle import (
-    RegularizedParticleFilter,
-    resolve_pf_bandwidths,
-    systematic_indices,
-)
+from nbf.filters.particle import RegularizedParticleFilter, systematic_indices
 from nbf.filters.resample_move import ResampleMoveParticleFilter
 
 PF_REG_BANDWIDTH_SCALE = float(os.environ.get('NBF_PF_REG_BANDWIDTH_SCALE', 1.0))
@@ -54,7 +49,7 @@ def make_enkf(m: int) -> EnsembleKalmanFilter:
 
 
 @eqx.filter_jit
-def gold_smc_sample_stream_batch(
+def pf_op_sample_stream_batch(
     env: Lorenz96Env,
     state0_b,
     obs_values_b: Array,
@@ -63,6 +58,8 @@ def gold_smc_sample_stream_batch(
     num_particles: int,
     num_ref_samples: int,
 ):
+    """Optimal-proposal particle filter (marginal weights at the propagated means,
+    conjugate redraw of the observed coordinates, systematic resampling every step)."""
     obs_idx = env.obs_idx
 
     def _one(state0, obs_values, prior_key, step_keys):
@@ -103,12 +100,11 @@ def enkf_samples_density_stream_batch(
     reset_keys: Array,
     step_keys_b: Array,
     sample_keys_b: Array,
-    neg_pts_b: Array,
     num_ref_samples: int,
 ):
     taper = ring_taper(env.K, jnp.arange(env.K), filt.loc_radius)
 
-    def _gauss_logp(pset, x_true, x_neg):
+    def _gauss_logp(pset, x_true):
         X = env.state_array(pset.particles)
         mu = jnp.mean(X, axis=0)
         A = X - mu
@@ -120,25 +116,22 @@ def enkf_samples_density_stream_batch(
             sol = jax.scipy.linalg.solve_triangular(chol, x - mu, lower=True)
             return -0.5 * (jnp.sum(sol * sol) + log_det + env.K * jnp.log(2.0 * jnp.pi))
 
-        logps = jax.vmap(logpdf)(jnp.concatenate([x_true[None], x_neg], axis=0))
-        return logps[0], logps[1:]
+        return logpdf(x_true)
 
-    def _one(state0, obs0, states_next, obs_prev, obs_next, rkey, step_keys, sample_keys, neg_pts):
+    def _one(state0, obs0, states_next, obs_prev, obs_next, rkey, step_keys, sample_keys):
         pset = filt.reset(env, state0, obs0, rkey)
 
         def _step(pset, xs):
-            sk, samp_k, state_t, prev_obs_t, next_obs_t, neg = xs
+            sk, samp_k, state_t, prev_obs_t, next_obs_t = xs
             pset, _, _, _ = filt.update(env, pset, state_t, prev_obs_t, 0, next_obs_t, sk)
             samps = env.state_array(filt.sample(pset, state_t, num_ref_samples, samp_k))
-            lp_pos, lp_neg = _gauss_logp(pset, env.state_array(state_t), neg)
-            return pset, (samps, lp_pos, lp_neg)
+            lp_true = _gauss_logp(pset, env.state_array(state_t))
+            return pset, (samps, lp_true)
 
-        _, (samps, lp_pos, lp_neg) = jax.lax.scan(
-            _step,
-            pset,
-            (step_keys, sample_keys, states_next, obs_prev, obs_next, neg_pts),
+        _, (samps, lp_true) = jax.lax.scan(
+            _step, pset, (step_keys, sample_keys, states_next, obs_prev, obs_next)
         )
-        return samps, lp_pos, lp_neg
+        return samps, lp_true
 
     return jax.vmap(_one)(
         state0_b,
@@ -149,17 +142,7 @@ def enkf_samples_density_stream_batch(
         reset_keys,
         step_keys_b,
         sample_keys_b,
-        neg_pts_b,
     )
-
-
-@eqx.filter_jit
-def sample_l96_negatives_batch(env: Lorenz96Env, keys_b: Array, num_negatives: int) -> Array:
-    lo = env.norm_mean - 4.0 * env.norm_std
-    hi = env.norm_mean + 4.0 * env.norm_std
-    return jax.vmap(
-        jax.vmap(lambda k: jax.random.uniform(k, (num_negatives, env.K), minval=lo, maxval=hi))
-    )(keys_b)
 
 
 def _filter_sampler(make_filter):
@@ -195,42 +178,6 @@ def _filter_sampler(make_filter):
     return _sampler
 
 
-def _kde_density_sampler(make_filter):
-    def _sampler(
-        n,
-        *,
-        env,
-        k,
-        state0_b,
-        obs0_b,
-        states_next_b,
-        obs_prev_b,
-        obs_next_b,
-        neg_pts_b,
-        num_ref_samples,
-        key,
-        chunk_size=0,
-        desc=None,
-        **_,
-    ):
-        bws = resolve_pf_bandwidths(None, k, [n])
-        N = batch_size(state0_b)
-        T = time_len(obs_prev_b)
-        filt = make_filter(n)
-        rk, sk, samp_k = jax.random.split(key, 3)
-        return chunked_stream(
-            lambda *a: pf_samples_density_stream_batch(env, filt, *a),
-            (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
-            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
-            (num_ref_samples, bws[int(n)]),
-            N,
-            chunk_size,
-            desc=desc,
-        )
-
-    return _sampler
-
-
 def _enkf_density_sampler(
     n,
     *,
@@ -240,7 +187,6 @@ def _enkf_density_sampler(
     states_next_b,
     obs_prev_b,
     obs_next_b,
-    neg_pts_b,
     num_ref_samples,
     key,
     chunk_size=0,
@@ -254,7 +200,7 @@ def _enkf_density_sampler(
     return chunked_stream(
         lambda *a: enkf_samples_density_stream_batch(env, filt, *a),
         (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
-        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
         (num_ref_samples,),
         N,
         chunk_size,
@@ -303,7 +249,6 @@ def _nbf_op_density_sampler(
     states_next_b,
     obs_prev_b,
     obs_next_b,
-    neg_pts_b,
     num_ref_samples,
     key,
     density_model=None,
@@ -319,7 +264,7 @@ def _nbf_op_density_sampler(
     return chunked_stream(
         lambda *a: nbf_samples_density_stream_batch(env, filt, dmodel, *a),
         (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
-        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T), neg_pts_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
         (num_ref_samples,),
         N,
         chunk_size,
@@ -339,13 +284,12 @@ def _pf_op_sampler(
     desc=None,
     **_,
 ):
-    # The gold-SMC construction at a small budget: the strongest sample-based
-    # baseline under the same locally optimal proposal NBF-OP uses.
+    # The particle filter under the same locally optimal proposal NBF-OP uses.
     N = batch_size(state0_b)
     T = time_len(obs_next_b)
     prior_key, step_key = jax.random.split(key)
     return chunked_stream(
-        lambda *a: gold_smc_sample_stream_batch(env, *a),
+        lambda *a: pf_op_sample_stream_batch(env, *a),
         (state0_b, obs_next_b.values),
         (jax.random.split(prior_key, N), split_T(step_key, N, T)),
         (n, num_ref_samples),
@@ -364,8 +308,6 @@ L96_EXTRA_SAMPLERS = {
 }
 
 L96_EXTRA_DENSITY_SAMPLERS = {
-    'pf_reg': _kde_density_sampler(make_pf_reg),
-    'pf_rm': _kde_density_sampler(make_pf_rm),
     'enkf': _enkf_density_sampler,
     'nbf_op': _nbf_op_density_sampler,
 }
@@ -378,29 +320,4 @@ def compute_method_samples(spec: str, **kwargs) -> Array:
 def compute_method_samples_and_density(spec: str, **kwargs):
     return _compute_method_samples_and_density(
         spec, extra_density_samplers=L96_EXTRA_DENSITY_SAMPLERS, **kwargs
-    )
-
-
-def compute_l96_gold_smc_samples(
-    env: Lorenz96Env,
-    pf_count: int,
-    num_ref_samples: int,
-    state0_b,
-    obs_next_b,
-    key: Array,
-    *,
-    chunk_size: int = 0,
-    desc: str | None = None,
-):
-    N = batch_size(state0_b)
-    T = time_len(obs_next_b)
-    prior_key, step_key = jax.random.split(key)
-    return chunked_stream(
-        lambda *a: gold_smc_sample_stream_batch(env, *a),
-        (state0_b, obs_next_b.values),
-        (jax.random.split(prior_key, N), split_T(step_key, N, T)),
-        (pf_count, num_ref_samples),
-        N,
-        chunk_size,
-        desc=desc,
     )

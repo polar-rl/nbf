@@ -7,10 +7,10 @@ from nbf.filters.gmf import GMF
 
 
 @eqx.filter_jit
-def _gmf_logp_step(weights, mus, sigmas, x_true: Array, x_neg: Array):
-    pts = jnp.concatenate([x_true[None], x_neg], axis=0)
-    pts_flat = pts.reshape(pts.shape[0], -1)  # (M+1, 2k)
-    n = pts_flat.shape[-1]
+def _gmf_logp_step(weights, mus, sigmas, x_true: Array) -> Array:
+    """Log-density of the Gaussian mixture at the true state."""
+    x_flat = x_true.reshape(-1)  # (2k,)
+    n = x_flat.shape[-1]
     safe_w = weights / (jnp.sum(weights) + 1e-30)
     log_w = jnp.log(safe_w + 1e-30)
 
@@ -26,8 +26,7 @@ def _gmf_logp_step(weights, mus, sigmas, x_true: Array, x_neg: Array):
         per_comp = jax.vmap(lambda mu, sig: comp_logpdf(mu, sig, x))(mus, sigmas)
         return jax.scipy.special.logsumexp(log_w + per_comp)
 
-    logps = jax.vmap(logpdf)(pts_flat)
-    return logps[0], logps[1:]
+    return logpdf(x_flat)
 
 
 @eqx.filter_jit
@@ -88,25 +87,24 @@ def gmf_samples_density_stream_batch(
     obs_next_b,
     init_keys: Array,
     sample_keys_b: Array,
-    neg_pts_b: Array,
     num_ref_samples: int,
 ):
     k = gmf.ukf.k
 
-    def _one(states_next, obs_next, ikey, sample_keys, neg_pts):
+    def _one(states_next, obs_next, ikey, sample_keys):
         w0, mu0, sg0 = gmf.init(key=ikey)
 
         def _step(carry, xs):
             w, mu, sg = carry
-            samp_k, state_t, next_obs_t, neg = xs
+            samp_k, state_t, next_obs_t = xs
             w, mu, sg = gmf.step(w, mu, sg, env.policy, env.obstacles, next_obs_t)
             samps = _gmf_sample_mixture(w, mu, sg, num_ref_samples, k, samp_k)
-            lp_pos, lp_neg = _gmf_logp_step(w, mu, sg, state_t.positions, neg)
-            return (w, mu, sg), (samps, lp_pos, lp_neg)
+            lp_true = _gmf_logp_step(w, mu, sg, state_t.positions)
+            return (w, mu, sg), (samps, lp_true)
 
-        _, (samps, lp_pos, lp_neg) = jax.lax.scan(
-            _step, (w0, mu0, sg0), (sample_keys, states_next, obs_next, neg_pts)
+        _, (samps, lp_true) = jax.lax.scan(
+            _step, (w0, mu0, sg0), (sample_keys, states_next, obs_next)
         )
-        return samps, lp_pos, lp_neg
+        return samps, lp_true
 
-    return jax.vmap(_one)(states_next_b, obs_next_b, init_keys, sample_keys_b, neg_pts_b)
+    return jax.vmap(_one)(states_next_b, obs_next_b, init_keys, sample_keys_b)

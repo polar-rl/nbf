@@ -123,8 +123,6 @@ def _particle_intensity(p: int) -> float:
 
 
 def series_style(name: str) -> tuple[str, object]:
-    if name == 'pf_oracle':
-        return ('Ground Truth', 'black')
     if name.startswith('nbf_'):
         try:
             p = int(name[len('nbf_') :])
@@ -152,7 +150,7 @@ def _series_sort_key(name: str) -> tuple[int, float, str]:
             return (0, float(name.split('_', 1)[1]), name)
         except ValueError:
             return (0, 0.0, name)
-    if name.startswith('pf_') and name != 'pf_oracle':
+    if name.startswith('pf_'):
         try:
             return (1, float(name.split('_', 1)[1]), name)
         except ValueError:
@@ -162,8 +160,6 @@ def _series_sort_key(name: str) -> tuple[int, float, str]:
             return (2, float(name.split('_', 1)[1].lstrip('mM')), name)
         except ValueError:
             return (2, 0.0, name)
-    if name == 'pf_oracle':
-        return (3, 0.0, name)
     return (9, 0.0, name)
 
 
