@@ -49,6 +49,16 @@ def _tree_equal(a, b) -> bool:
     )
 
 
+def _tree_close(a, b, atol=1e-5) -> bool:
+    # step() runs under filter_jit and an eager reference does not fuse the same way,
+    # so exact equality is only expected between two jitted paths (see
+    # scripts/check_filter_bitwise.py for the cross-commit bitwise guard).
+    return all(
+        bool(jnp.allclose(x, y, atol=atol, rtol=1e-5))
+        for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b), strict=True)
+    )
+
+
 def test_bootstrap_step_matches_pre_interface_algorithm(setup):
     # The old NeuralBayesianFilter.step, inlined: same key split, same ParticleSet.simulate.
     env, model, s0, o0, st, op, on = setup
@@ -67,7 +77,7 @@ def test_bootstrap_step_matches_pre_interface_algorithm(setup):
     )
 
     got, got_sampling, got_simulation = filt.step(env, emb, st, op, 0, on, key)
-    assert _tree_equal(got, expected)
+    assert _tree_close(got, expected, atol=1e-6)
     assert bool(got_sampling == sampling_fallback) and bool(got_simulation == simulation_fallback)
 
 
@@ -94,7 +104,7 @@ def test_optimal_step_uses_optimal_proposal_particle_set(setup):
     weights, _ = filt.compare_state_obs(env, particles, op)
     expected = optimal_proposal_particle_set(env, particles, weights, on, propose_key)
     got, _, fallback = filt.step(env, emb, st, op, 0, on, key)
-    assert _tree_equal(got, expected)
+    assert _tree_close(got, expected)
     assert not bool(fallback)
 
 
