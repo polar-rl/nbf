@@ -9,7 +9,8 @@ Range-only target tracking with a stationary sensor in a 10×10 grid with obstac
 | `env.py` | `PursuitEvasionEnv` — dynamics, range-only observations, obstacles, soft inter-evader repulsion, optional shuffled-observation likelihood |
 | `policies.py` | Evader policy library (goal, random walk, patrol, evasive, wall-hugger, orbit), the training mixture, and the named OOD scenarios |
 | `train.py` | On-policy NBF training: episodes are simulated on the fly under policies drawn from the training mixture, the filter is rolled out with the current parameters, and the generator objective is evaluated at the true joint state (loop in `nbf/train.py`) |
-| `eval/` | Evaluation helpers: GMF construction, sample and density streams, method dispatch |
+| `run_grid.py` | Evaluation grid: `id` (training-mixture components), `ood` (held-out policies), `sigma` (pinned observation noise past the training range); one shard per (cell, subcell, seed), `--merge` builds the tables |
+| `eval/` | Evaluation helpers: GMF construction, sample and density streams, method dispatch, sigma override |
 | `visualize.py` | Plots: metric-vs-time, dimension scaling, OOD bar charts, filter heatmaps |
 | `config.py` | `DataConfig` (evader count, episode length, interaction, shuffling) |
 
@@ -34,6 +35,11 @@ The NBF set-transformer embedding is permutation-invariant over particles, which
 # Train the NBF embedding on-policy
 python -m nbf.domains.pursuit_evasion.train \
     --config nbf/domains/pursuit_evasion/configs/nbf_k1.yaml
-```
 
-The grid evaluator (`run_grid`, mirroring `nbf.domains.lorenz96.run_grid`) is the next addition.
+# Evaluate one cell locally (id / ood / sigma), or one shard per array task on a cluster
+python -m nbf.domains.pursuit_evasion.run_grid id \
+    --model_dir results/pursuit_evasion/k1/nbf --output_dir results/pursuit_evasion/k1/grid
+python -m nbf.domains.pursuit_evasion.run_grid --list_tasks --output_dir /tmp/x   # array size
+python -m nbf.domains.pursuit_evasion.run_grid --merge --t_min 2 \
+    --model_dir results/pursuit_evasion/k1/nbf --output_dir results/pursuit_evasion/k1/grid
+```

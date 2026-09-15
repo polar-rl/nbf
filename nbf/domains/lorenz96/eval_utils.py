@@ -14,6 +14,7 @@ from nbf.eval.base import batch_size, chunked_stream, split_T, time_len
 from nbf.eval.dispatch import (
     compute_method_samples as _compute_method_samples,
 )
+from nbf.eval.dispatch import filter_sampler
 from nbf.eval.dispatch import (
     compute_method_samples_and_density as _compute_method_samples_and_density,
 )
@@ -145,39 +146,6 @@ def enkf_samples_density_stream_batch(
     )
 
 
-def _filter_sampler(make_filter):
-    def _sampler(
-        n,
-        *,
-        env,
-        state0_b,
-        obs0_b,
-        states_next_b,
-        obs_prev_b,
-        obs_next_b,
-        num_ref_samples,
-        key,
-        chunk_size=0,
-        desc=None,
-        **_,
-    ):
-        N = batch_size(state0_b)
-        T = time_len(obs_prev_b)
-        filt = make_filter(n)
-        rk, sk, samp_k = jax.random.split(key, 3)
-        return chunked_stream(
-            lambda *a: pf_reference_sample_stream_batch(env, filt, *a),
-            (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
-            (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
-            (num_ref_samples,),
-            N,
-            chunk_size,
-            desc=desc,
-        )
-
-    return _sampler
-
-
 def _enkf_density_sampler(
     n,
     *,
@@ -300,9 +268,9 @@ def _pf_op_sampler(
 
 
 L96_EXTRA_SAMPLERS = {
-    'pf_reg': _filter_sampler(make_pf_reg),
-    'pf_rm': _filter_sampler(make_pf_rm),
-    'enkf': _filter_sampler(make_enkf),
+    'pf_reg': filter_sampler(make_pf_reg),
+    'pf_rm': filter_sampler(make_pf_rm),
+    'enkf': filter_sampler(make_enkf),
     'nbf_op': _nbf_op_sampler,
     'pf_op': _pf_op_sampler,
 }

@@ -7,9 +7,11 @@ from nbf.domains.pursuit_evasion.eval.samples import (
     gmf_samples_density_stream_batch,
 )
 from nbf.eval.base import batch_size, chunked_stream, split_T, time_len
+from nbf.filters.particle import RegularizedParticleFilter
 from nbf.eval.dispatch import (
     compute_method_samples as _compute_method_samples,
 )
+from nbf.eval.dispatch import filter_sampler
 from nbf.eval.dispatch import (
     compute_method_samples_and_density as _compute_method_samples_and_density,
 )
@@ -71,7 +73,14 @@ def _gmf_density_sampler(
     )
 
 
-PE_EXTRA_SAMPLERS = {'gmf': _gmf_sampler}
+PE_PF_REG_BANDWIDTH_SCALE = 1.0
+
+
+def make_pe_pf_reg(n: int) -> RegularizedParticleFilter:
+    return RegularizedParticleFilter(num_particles=n, bandwidth_scale=PE_PF_REG_BANDWIDTH_SCALE)
+
+
+PE_EXTRA_SAMPLERS = {'gmf': _gmf_sampler, 'pf_reg': filter_sampler(make_pe_pf_reg)}
 PE_EXTRA_DENSITY_SAMPLERS = {'gmf': _gmf_density_sampler}
 
 

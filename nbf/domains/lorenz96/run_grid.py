@@ -2,33 +2,32 @@ import argparse
 import dataclasses
 import json
 import os
-import zlib
-
 import jax
-import numpy as np  # noqa: E402
 
-from nbf.config import build_dataclass  # noqa: E402
-from nbf.domains.lorenz96.config import DataConfig  # noqa: E402
-from nbf.domains.lorenz96.env import Lorenz96Env  # noqa: E402
-from nbf.domains.lorenz96.eval_utils import (  # noqa: E402
+from nbf.config import build_dataclass
+from nbf.domains.lorenz96.config import DataConfig
+from nbf.domains.lorenz96.env import Lorenz96Env
+from nbf.domains.lorenz96.eval_utils import (
     L96_EXTRA_SAMPLERS,
     compute_method_samples,
     compute_method_samples_and_density,
 )
-from nbf.eval._tex import fmt_val, latex_escape  # noqa: E402
-from nbf.eval.base import (  # noqa: E402
+from nbf.eval.base import (
     cast_velocity_net_bf16,
     load_embedding_model,
     parse_method_spec,
     parse_seeds,
     rollout_episodes,
 )
-from nbf.eval.dispatch import NUM_REF_SAMPLES  # noqa: E402
-from nbf.eval.metrics import (  # noqa: E402
-    aggregate_mean_sem,
-    sample_metrics_per_step,
+from nbf.eval.dispatch import NUM_REF_SAMPLES
+from nbf.eval.grid import (
+    enumerate_tasks,
+    merge_cell,
+    run_merge,
+    score_methods,
+    shard_path,
+    write_shard,
 )
-from nbf.eval.timing import time_method_walltime  # noqa: E402
 
 TRAIN_SIGMA_OBS = (0.5, 1.5)
 EVAL_SIGMA_OBS = (1.0, 1.0)
@@ -43,6 +42,10 @@ CELLS = {
         ('f8', ((8.0, 8.0),), EVAL_SIGMA_OBS),
     ],
 }
+
+def subcell_labels(cell: str) -> list[tuple[str, str]]:
+    return [(sc, f'sigma_obs {so[0]}-{so[1]}') for sc, _, so in CELLS[cell]]
+
 
 DEFAULT_METHODS = (
     'nbf_256,nbf_1024,nbf_2048,'
@@ -74,66 +77,6 @@ def make_cell_env(data_cfg, f_bands, sigma_obs, episode_length: int) -> Lorenz96
     )
 
 
-def _atomic_savez(path: str, **arrays) -> None:
-    """Write an npz via a temp file + rename, so a killed task can't leave a torn file.
-
-    Array tasks are requeueable, and a partially written cache or shard would be
-    silently loaded by whatever runs next.
-    """
-    # The .npz suffix is required: np.savez appends it when the name lacks one,
-    # which would leave the rename pointing at a file that was never written.
-    tmp = f'{path}.tmp{os.getpid()}.npz'
-    np.savez(tmp, **arrays)
-    os.replace(tmp, path)
-
-
-def enumerate_tasks(seeds) -> list[tuple[str, str, tuple, tuple, int]]:
-    tasks = []
-    for cell in sorted(CELLS):
-        for subcell, f_bands, sigma_obs in CELLS[cell]:
-            for seed in seeds:
-                tasks.append((cell, subcell, f_bands, sigma_obs, seed))
-    return tasks
-
-
-def shard_path(output_dir: str, cell: str, subcell: str, seed: int) -> str:
-    return os.path.join(output_dir, '_shards', f'{cell}__{subcell}__s{seed}.npz')
-
-
-def write_shard(path: str, cell: str, subcell: str, seed: int, per_method: dict) -> None:
-    payload = {
-        f'{spec}|{metric}': arr for spec, m in per_method.items() for metric, arr in m.items()
-    }
-    payload['_cell'] = np.asarray(cell)
-    payload['_subcell'] = np.asarray(subcell)
-    payload['_seed'] = np.asarray(seed)
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    _atomic_savez(path, **payload)
-
-
-def load_shards(output_dir: str) -> dict[str, dict]:
-    """Read every shard back into ``{cell: {(subcell, seed): {spec: {metric: arr}}}}``."""
-    by_cell: dict[str, dict] = {}
-    shard_dir = os.path.join(output_dir, '_shards')
-    if not os.path.isdir(shard_dir):
-        return by_cell
-    for fname in sorted(os.listdir(shard_dir)):
-        if not fname.endswith('.npz'):
-            continue
-        with np.load(os.path.join(shard_dir, fname)) as d:
-            cell = str(d['_cell'])
-            subcell = str(d['_subcell'])
-            seed = int(d['_seed'])
-            per_method: dict[str, dict] = {}
-            for key in d.files:
-                if key.startswith('_'):
-                    continue
-                spec, _, metric = key.rpartition('|')
-                per_method.setdefault(spec, {})[metric] = d[key]
-        by_cell.setdefault(cell, {})[(subcell, seed)] = per_method
-    return by_cell
-
-
 def run_subcell(
     args, data_cfg, sampling_model, density_model, cell, subcell, f_bands, sigma_obs, methods, seed
 ):
@@ -146,170 +89,24 @@ def run_subcell(
         env, args.episode_length, args.num_episodes, rollout_key
     )
 
-    out = {}
-    for spec in methods:
-        kind, _ = parse_method_spec(spec)
-        # crc32, not hash(): str hashing is salted per process, so array tasks and
-        # requeued attempts would each draw different method keys.
-        method_key = jax.random.fold_in(key, zlib.crc32(spec.encode()) % (2**31))
-        density = None
-        if kind in DENSITY_KINDS:
-            samples, density = compute_method_samples_and_density(
-                spec,
-                env=env,
-                embedding_model=sampling_model,
-                density_model=density_model,
-                state0_b=state0_b,
-                obs0_b=obs0_b,
-                states_next_b=states_next_b,
-                obs_prev_b=obs_prev_b,
-                obs_next_b=obs_next_b,
-                num_ref_samples=args.num_ref_samples,
-                key=method_key,
-                chunk_size=args.chunk_size,
-                desc=f'{spec} samples',
-            )
-        else:
-            samples = compute_method_samples(
-                spec,
-                env=env,
-                embedding_model=sampling_model,
-                state0_b=state0_b,
-                obs0_b=obs0_b,
-                states_next_b=states_next_b,
-                obs_prev_b=obs_prev_b,
-                obs_next_b=obs_next_b,
-                num_ref_samples=args.num_ref_samples,
-                key=method_key,
-                chunk_size=args.chunk_size,
-                desc=f'{spec} samples',
-            )
-
-        res = sample_metrics_per_step(samples, states_next_b.x)
-        if density is not None:
-            res.update({name: np.asarray(v) for name, v in density.items()})
-        if args.timing_repeats > 0:
-            timing = time_method_walltime(
-                spec,
-                env=env,
-                embedding_model=sampling_model,
-                state0_b=state0_b,
-                obs0_b=obs0_b,
-                states_next_b=states_next_b,
-                obs_prev_b=obs_prev_b,
-                obs_next_b=obs_next_b,
-                num_ref_samples=args.num_ref_samples,
-                num_warmup=1,
-                num_repeats=args.timing_repeats,
-                key=jax.random.fold_in(method_key, 1),
-                extra_samplers=L96_EXTRA_SAMPLERS,
-            )
-            res['walltime_s'] = np.asarray(timing['mean_s'])
-        out[spec] = res
-        rmse_mean, rmse_sem = aggregate_mean_sem(res['rmse'][:, args.t_min :])
-        crps_mean, _ = aggregate_mean_sem(res['crps'][:, args.t_min :])
-        nll_txt = ''
-        if 'nll' in res:
-            nll_mean, nll_sem = aggregate_mean_sem(res['nll'][:, args.t_min :])
-            nll_txt = f' nll={nll_mean:.3f}+/-{nll_sem:.3f}'
-        print(
-            f'  [{cell}/{subcell} seed {seed}] {spec}:'
-            f'{nll_txt} rmse={rmse_mean:.3f}+/-{rmse_sem:.3f} crps={crps_mean:.3f}'
-        )
-    return out
-
-
-def _pool(results, subcell, spec, metric):
-    arrs = [
-        r[spec][metric]
-        for (sc, _seed), r in results.items()
-        if sc == subcell and spec in r and metric in r[spec]
-    ]
-    if not arrs:
-        return None
-    if metric == 'walltime_s':
-        return np.asarray([float(a) for a in arrs])
-    return np.concatenate(arrs, axis=0)
-
-
-def write_summaries(args, cell, subcells, methods, results):
-    md_lines = [f'# L96 grid cell {cell.upper()} (t>={args.t_min})', '']
-    tex_lines = []
-    for subcell, _, sigma_obs in subcells:
-        md_lines += [
-            f'## {subcell} (sigma_obs {sigma_obs[0]}-{sigma_obs[1]})',
-            '',
-            '| method | NLL | RMSE | CRPS | cov50 | cov90 | spread/RMSE | s/run |',
-            '|---|---|---|---|---|---|---|---|',
-        ]
-        tex_lines += [
-            f'% {cell} {subcell}',
-            r'\begin{tabular}{lccccccc}',
-            r'method & NLL & RMSE & CRPS & cov50 & cov90 & spread/RMSE & s/run \\',
-            r'\hline',
-        ]
-        for spec in methods:
-            row = {}
-            for metric in ('nll', 'rmse', 'crps', 'cov50', 'cov90', 'spread', 'walltime_s'):
-                pooled = _pool(results, subcell, spec, metric)
-                if pooled is None:
-                    row[metric] = float('nan'), float('nan')
-                elif metric == 'walltime_s':
-                    row[metric] = float(np.mean(pooled)), float('nan')
-                else:
-                    row[metric] = aggregate_mean_sem(pooled[:, args.t_min :])
-            cells = [
-                f'{fmt_val(row["nll"][0])} ± {fmt_val(row["nll"][1])}',
-                f'{fmt_val(row["rmse"][0])} ± {fmt_val(row["rmse"][1])}',
-                f'{fmt_val(row["crps"][0])} ± {fmt_val(row["crps"][1])}',
-                fmt_val(row['cov50'][0]),
-                fmt_val(row['cov90'][0]),
-                fmt_val(row['spread'][0] / row['rmse'][0]),
-                fmt_val(row['walltime_s'][0]),
-            ]
-            md_lines.append(f'| {spec} | ' + ' | '.join(cells) + ' |')
-            tex_lines.append(latex_escape(spec) + ' & ' + ' & '.join(cells) + r' \\')
-        md_lines.append('')
-        tex_lines += [r'\end{tabular}', '']
-
-    md_path = os.path.join(args.output_dir, f'{cell}_summary.md')
-    with open(md_path, 'w') as f:
-        f.write('\n'.join(md_lines))
-    tex_path = os.path.join(args.output_dir, f'{cell}.tex')
-    with open(tex_path, 'w') as f:
-        f.write('\n'.join(tex_lines))
-    print(f'Saved {md_path} and {tex_path}')
-
-
-def merge_cell(args, cell: str, results: dict, methods: list[str]) -> None:
-    """Reduce the shards of one cell into its npz + summary tables."""
-    out = {}
-    for (subcell, seed), per_method in results.items():
-        for spec, metrics in per_method.items():
-            for metric, arr in metrics.items():
-                out[f'{subcell}|s{seed}|{spec}|{metric}'] = arr
-    npz_path = os.path.join(args.output_dir, f'{cell}.npz')
-    _atomic_savez(npz_path, **out)
-    print(f'Saved {npz_path}')
-    write_summaries(args, cell, CELLS[cell], methods, results)
-
-
-def run_merge(args) -> None:
-    by_cell = load_shards(args.output_dir)
-    if not by_cell:
-        raise SystemExit(f'No shards found under {os.path.join(args.output_dir, "_shards")}')
-    requested = [m.strip() for m in args.methods.split(',') if m.strip()]
-    seeds = parse_seeds(args)
-    for cell in sorted(by_cell):
-        results = by_cell[cell]
-        present = {spec for per_method in results.values() for spec in per_method}
-        methods = [m for m in requested if m in present]
-        methods += sorted(present - set(methods))
-        expected = len(CELLS[cell]) * len(seeds)
-        if len(results) != expected:
-            missing = sorted({(sc, s) for sc, _, _ in CELLS[cell] for s in seeds} - set(results))
-            print(f'WARNING: {cell} has {len(results)}/{expected} shards; missing {missing}')
-        merge_cell(args, cell, results, methods)
+    return score_methods(
+        methods,
+        tag=f'{cell}/{subcell} seed {seed}',
+        key=key,
+        env=env,
+        episodes=(state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        truth=states_next_b.x,
+        sampling_model=sampling_model,
+        density_model=density_model,
+        density_kinds=DENSITY_KINDS,
+        compute_samples=compute_method_samples,
+        compute_samples_and_density=compute_method_samples_and_density,
+        extra_samplers=L96_EXTRA_SAMPLERS,
+        num_ref_samples=args.num_ref_samples,
+        chunk_size=args.chunk_size,
+        timing_repeats=args.timing_repeats,
+        t_min=args.t_min,
+    )
 
 
 def main() -> None:
@@ -369,14 +166,22 @@ def main() -> None:
     args = parser.parse_args()
     os.makedirs(args.output_dir, exist_ok=True)
 
-    tasks = enumerate_tasks(parse_seeds(args))
+    tasks = enumerate_tasks(CELLS, parse_seeds(args))
     if args.list_tasks:
         for i, (cell, subcell, _, sigma_obs, seed) in enumerate(tasks):
             print(f'{i}\t{cell}\t{subcell}\tsigma_obs={sigma_obs}\tseed={seed}')
         print(f'\n{len(tasks)} tasks -> #SBATCH --array=0-{len(tasks) - 1}')
         return
     if args.merge:
-        run_merge(args)
+        run_merge(
+            args.output_dir,
+            'L96 grid',
+            CELLS,
+            subcell_labels,
+            [m.strip() for m in args.methods.split(',') if m.strip()],
+            parse_seeds(args),
+            args.t_min,
+        )
         return
     if args.task_id < 0 and args.cell is None:
         raise SystemExit('give a cell, or --task_id / --list_tasks / --merge')
@@ -467,7 +272,9 @@ def main() -> None:
                 seed,
             )
 
-    merge_cell(args, args.cell, results, methods)
+    merge_cell(
+        args.output_dir, 'L96 grid', args.cell, subcell_labels(args.cell), results, methods, args.t_min
+    )
 
 
 if __name__ == '__main__':
