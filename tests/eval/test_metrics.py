@@ -5,9 +5,13 @@ import pytest
 
 from nbf.eval.base import chunk_bounds, chunked_stream, parse_method_spec, run_chunked
 from nbf.eval.metrics import (
+    coverage_per_step_batch,
+    crps_per_step_batch,
     mmd2_multibw_per_step_batch,
     mmd2_multibw_per_step_chunked,
     rmse_per_step_batch,
+    sample_metrics_per_step,
+    spread_per_step_batch,
 )
 
 
@@ -52,6 +56,76 @@ class TestRmsePerStepBatch:
         samples = jnp.stack([jnp.ones((1, 1, 3)), -jnp.ones((1, 1, 3))], axis=2)
         rmse = np.asarray(rmse_per_step_batch(samples, truth))
         assert np.allclose(rmse, 0.0)
+
+
+def _gaussian_crps(mu, sigma, x):
+    # Closed form for N(mu, sigma^2): sigma [z (2 Phi(z) - 1) + 2 phi(z) - 1 / sqrt(pi)].
+    from scipy.stats import norm
+
+    z = (x - mu) / sigma
+    return sigma * (z * (2 * norm.cdf(z) - 1) + 2 * norm.pdf(z) - 1 / np.sqrt(np.pi))
+
+
+class TestCrpsPerStepBatch:
+    def test_point_mass_is_absolute_error(self):
+        truth = jnp.zeros((1, 1, 3))
+        samples = jnp.full((1, 1, 16, 3), 2.0)
+        crps = np.asarray(crps_per_step_batch(samples, truth))
+        assert crps.shape == (1, 1)
+        assert np.allclose(crps, 2.0)
+
+    def test_matches_brute_force_pairs(self):
+        rng = np.random.default_rng(0)
+        X = rng.normal(size=(2, 3, 7, 4)).astype(np.float32)
+        x = rng.normal(size=(2, 3, 4)).astype(np.float32)
+        crps = np.asarray(crps_per_step_batch(jnp.asarray(X), jnp.asarray(x)))
+        S = X.shape[2]
+        term1 = np.abs(X - x[:, :, None, :]).mean(axis=2)
+        diffs = np.abs(X[:, :, :, None, :] - X[:, :, None, :, :]).sum(axis=(2, 3))
+        term2 = 0.5 * diffs / (S * (S - 1))  # fair estimator: distinct pairs only
+        expected = (term1 - term2).mean(axis=-1)
+        assert np.allclose(crps, expected, atol=1e-5)
+
+    def test_gaussian_closed_form(self):
+        pytest.importorskip('scipy')
+        mu, sigma = 0.3, 1.7
+        truths = np.array([-1.0, 0.3, 2.5])
+        rng = np.random.default_rng(1)
+        S = 20000
+        X = rng.normal(mu, sigma, size=(1, 3, S, 1)).astype(np.float32)
+        crps = np.asarray(crps_per_step_batch(jnp.asarray(X), jnp.asarray(truths.reshape(1, 3, 1))))
+        expected = _gaussian_crps(mu, sigma, truths)
+        assert np.allclose(crps[0], expected, atol=0.03)
+
+
+class TestCoverageAndSpread:
+    def test_coverage_of_calibrated_gaussian(self):
+        rng = np.random.default_rng(2)
+        N, T, S, D = 1, 1, 4000, 2000
+        X = rng.normal(size=(N, T, S, D)).astype(np.float32)
+        x = rng.normal(size=(N, T, D)).astype(np.float32)
+        for level in (0.5, 0.9):
+            cov = np.asarray(coverage_per_step_batch(jnp.asarray(X), jnp.asarray(x), level))
+            assert cov.shape == (N, T)
+            assert abs(float(cov[0, 0]) - level) < 0.04
+
+    def test_coverage_zero_when_truth_outside(self):
+        X = jnp.zeros((1, 1, 8, 3)) + jnp.arange(8.0)[None, None, :, None]
+        x = jnp.full((1, 1, 3), 100.0)
+        assert np.allclose(coverage_per_step_batch(X, x, 0.9), 0.0)
+
+    def test_spread_is_sample_std(self):
+        rng = np.random.default_rng(3)
+        X = rng.normal(0, 2.0, size=(1, 1, 5000, 3)).astype(np.float32)
+        spread = np.asarray(spread_per_step_batch(jnp.asarray(X)))
+        assert abs(float(spread[0, 0]) - 2.0) < 0.1
+
+    def test_sample_metrics_keys_and_shapes(self):
+        X = jnp.asarray(np.random.default_rng(4).normal(size=(2, 3, 9, 4)).astype(np.float32))
+        x = jnp.zeros((2, 3, 4))
+        out = sample_metrics_per_step(X, x)
+        assert set(out) == {'rmse', 'crps', 'spread', 'cov50', 'cov90'}
+        assert all(v.shape == (2, 3) for v in out.values())
 
 
 class TestChunkBounds:

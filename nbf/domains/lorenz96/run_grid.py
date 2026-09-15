@@ -12,7 +12,6 @@ from nbf.domains.lorenz96.config import DataConfig  # noqa: E402
 from nbf.domains.lorenz96.env import Lorenz96Env  # noqa: E402
 from nbf.domains.lorenz96.eval_utils import (  # noqa: E402
     L96_EXTRA_SAMPLERS,
-    compute_l96_gold_smc_samples,
     compute_method_samples,
     compute_method_samples_and_density,
     sample_l96_negatives_batch,
@@ -26,14 +25,12 @@ from nbf.eval.base import (  # noqa: E402
     rollout_episodes,
 )
 from nbf.eval.dispatch import (  # noqa: E402
-    GOLD_SMC_COUNT,
     NUM_NEGATIVES,
     NUM_REF_SAMPLES,
 )
 from nbf.eval.metrics import (  # noqa: E402
     aggregate_mean_sem,
-    mmd2_multibw_per_step_chunked,
-    rmse_per_step_batch,
+    sample_metrics_per_step,
 )
 from nbf.eval.timing import time_method_walltime  # noqa: E402
 
@@ -56,8 +53,7 @@ DEFAULT_METHODS = (
     'pf_1024,pf_8192,pf_65536,'
     'pf_reg_1024,pf_reg_8192,pf_reg_65536,'
     'pf_rm_1024,pf_rm_8192,pf_rm_65536,'
-    'enkf_20,enkf_50,enkf_100,'
-    'pf_oracle'
+    'enkf_20,enkf_50,enkf_100'
 )
 
 DENSITY_KINDS = ('nbf', 'nbf_op', 'pf', 'pf_reg', 'pf_rm', 'enkf')
@@ -140,63 +136,15 @@ def load_shards(output_dir: str) -> dict[str, dict]:
     return by_cell
 
 
-def oracle_cache_path(
-    output_dir, cell, subcell, num_episodes, episode_length, S, seed, substeps, sigma_obs
-) -> str:
-    # GOLD_SMC_COUNT belongs in the name: without it a cache written at one
-    # particle count is silently reused at another (hit 2026-07-28, one shard
-    # scored against a stale 200k oracle inside a 2M run).
-    sig = f'{sigma_obs[0]:g}-{sigma_obs[1]:g}'
-    fname = (
-        f'l96_{cell}_{subcell}_N{num_episodes}_T{episode_length}_S{S}'
-        f'_sub{substeps}_sig{sig}_G{GOLD_SMC_COUNT}_seed{seed}.npz'
-    )
-    return os.path.join(output_dir, '_oracle_cache', fname)
-
-
-def get_or_compute_l96_oracle(
-    cache_path, env, state0_b, obs_next_b, num_ref_samples, key, chunk_size=0
-):
-    if os.path.exists(cache_path):
-        with np.load(cache_path) as d:
-            return jax.numpy.asarray(d['samples'])
-    samples = compute_l96_gold_smc_samples(
-        env,
-        GOLD_SMC_COUNT,
-        num_ref_samples,
-        state0_b,
-        obs_next_b,
-        key,
-        chunk_size=chunk_size,
-        desc='gold-SMC oracle',
-    )
-    os.makedirs(os.path.dirname(cache_path), exist_ok=True)
-    _atomic_savez(cache_path, samples=np.asarray(samples))
-    return samples
-
-
 def run_subcell(
     args, data_cfg, sampling_model, density_model, cell, subcell, f_bands, sigma_obs, methods, seed
 ):
     env = make_cell_env(data_cfg, f_bands, sigma_obs, args.episode_length)
     key = jax.random.PRNGKey(seed)
-    rollout_key, oracle_key, oracle2_key, neg_key = jax.random.split(key, 4)
+    # Four-way split kept so method keys match grids run before the oracle was removed.
+    rollout_key, _oracle_key, _oracle2_key, neg_key = jax.random.split(key, 4)
     state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = rollout_episodes(
         env, args.episode_length, args.num_episodes, rollout_key
-    )
-    cache = oracle_cache_path(
-        args.output_dir,
-        cell,
-        subcell,
-        args.num_episodes,
-        args.episode_length,
-        args.num_ref_samples,
-        seed,
-        data_cfg.window_substeps,
-        sigma_obs,
-    )
-    oracle = get_or_compute_l96_oracle(
-        cache, env, state0_b, obs_next_b, args.num_ref_samples, oracle_key, args.chunk_size
     )
     N, T = args.num_episodes, args.episode_length
     neg_pts_b = sample_l96_negatives_batch(
@@ -210,18 +158,7 @@ def run_subcell(
         # requeued attempts would each draw different method keys.
         method_key = jax.random.fold_in(key, zlib.crc32(spec.encode()) % (2**31))
         density = None
-        if spec == 'pf_oracle':
-            samples = compute_l96_gold_smc_samples(
-                env,
-                GOLD_SMC_COUNT,
-                args.num_ref_samples,
-                state0_b,
-                obs_next_b,
-                oracle2_key,
-                chunk_size=args.chunk_size,
-                desc=f'{spec} samples',
-            )
-        elif kind in DENSITY_KINDS:
+        if kind in DENSITY_KINDS:
             samples, density = compute_method_samples_and_density(
                 spec,
                 env=env,
@@ -255,17 +192,10 @@ def run_subcell(
                 desc=f'{spec} samples',
             )
 
-        res = {
-            'mmd': np.asarray(
-                mmd2_multibw_per_step_chunked(
-                    samples, oracle, chunk_size=args.chunk_size, desc=f'{spec} mmd'
-                )
-            ),
-            'rmse': np.asarray(rmse_per_step_batch(samples, states_next_b.x)),
-        }
+        res = sample_metrics_per_step(samples, states_next_b.x)
         if density is not None:
             res.update({name: np.asarray(v) for name, v in density.items()})
-        if args.timing_repeats > 0 and spec != 'pf_oracle':
+        if args.timing_repeats > 0:
             timing = time_method_walltime(
                 spec,
                 env=env,
@@ -283,11 +213,15 @@ def run_subcell(
             )
             res['walltime_s'] = np.asarray(timing['mean_s'])
         out[spec] = res
-        mmd_mean, mmd_sem = aggregate_mean_sem(res['mmd'][:, args.t_min :])
-        rmse_mean, _ = aggregate_mean_sem(res['rmse'][:, args.t_min :])
+        rmse_mean, rmse_sem = aggregate_mean_sem(res['rmse'][:, args.t_min :])
+        crps_mean, _ = aggregate_mean_sem(res['crps'][:, args.t_min :])
+        nll_txt = ''
+        if 'nll' in res:
+            nll_mean, nll_sem = aggregate_mean_sem(res['nll'][:, args.t_min :])
+            nll_txt = f' nll={nll_mean:.3f}+/-{nll_sem:.3f}'
         print(
-            f'  [{cell}/{subcell} seed {seed}] {spec}: '
-            f'mmd2={mmd_mean:.5f}+/-{mmd_sem:.5f} rmse={rmse_mean:.3f}'
+            f'  [{cell}/{subcell} seed {seed}] {spec}:'
+            f'{nll_txt} rmse={rmse_mean:.3f}+/-{rmse_sem:.3f} crps={crps_mean:.3f}'
         )
     return out
 
@@ -312,18 +246,18 @@ def write_summaries(args, cell, subcells, methods, results):
         md_lines += [
             f'## {subcell} (sigma_obs {sigma_obs[0]}-{sigma_obs[1]})',
             '',
-            '| method | MMD$^2$ | NLL | LDS | AUC | RMSE | s/run |',
-            '|---|---|---|---|---|---|---|',
+            '| method | NLL | RMSE | CRPS | cov50 | cov90 | spread/RMSE | s/run |',
+            '|---|---|---|---|---|---|---|---|',
         ]
         tex_lines += [
             f'% {cell} {subcell}',
-            r'\begin{tabular}{lcccccc}',
-            r'method & MMD$^2$ & NLL & LDS & AUC & RMSE & s/run \\',
+            r'\begin{tabular}{lccccccc}',
+            r'method & NLL & RMSE & CRPS & cov50 & cov90 & spread/RMSE & s/run \\',
             r'\hline',
         ]
         for spec in methods:
             row = {}
-            for metric in ('mmd', 'nll', 'log_density_score', 'auc', 'rmse', 'walltime_s'):
+            for metric in ('nll', 'rmse', 'crps', 'cov50', 'cov90', 'spread', 'walltime_s'):
                 pooled = _pool(results, subcell, spec, metric)
                 if pooled is None:
                     row[metric] = float('nan'), float('nan')
@@ -332,11 +266,12 @@ def write_summaries(args, cell, subcells, methods, results):
                 else:
                     row[metric] = aggregate_mean_sem(pooled[:, args.t_min :])
             cells = [
-                f'{fmt_val(row["mmd"][0])} ± {fmt_val(row["mmd"][1])}',
                 f'{fmt_val(row["nll"][0])} ± {fmt_val(row["nll"][1])}',
-                fmt_val(row['log_density_score'][0]),
-                fmt_val(row['auc'][0]),
                 f'{fmt_val(row["rmse"][0])} ± {fmt_val(row["rmse"][1])}',
+                f'{fmt_val(row["crps"][0])} ± {fmt_val(row["crps"][1])}',
+                fmt_val(row['cov50'][0]),
+                fmt_val(row['cov90'][0]),
+                fmt_val(row['spread'][0] / row['rmse'][0]),
                 fmt_val(row['walltime_s'][0]),
             ]
             md_lines.append(f'| {spec} | ' + ' | '.join(cells) + ' |')
@@ -403,7 +338,7 @@ def main() -> None:
         '--t_min',
         type=int,
         default=0,
-        help='drop the first t_min steps (reference-noise-limited) from summaries and prints; '
+        help='drop the first t_min spin-up steps from summaries and prints; '
         'shards always store full per-step arrays, so this can be applied at --merge time',
     )
     parser.add_argument(
