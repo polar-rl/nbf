@@ -29,22 +29,34 @@ from nbf.eval.grid import (
     write_shard,
 )
 
-TRAIN_SIGMA_OBS = (0.5, 1.5)
 EVAL_SIGMA_OBS = (1.0, 1.0)
+# Held-out likelihoods: the hard config trains on sigma_obs in [0.5, 1.1]; the sweep runs
+# past both ends at the held-out forcing.
+SIGMA_SWEEP = (0.1, 0.25, 0.5, 1.0, 1.5, 2.0, 3.0)
+HELD_OUT_F = ((8.0, 8.0),)
 DEFAULT_CHUNK_SIZE = 4
 
+
+def _sigma_tag(sigma: float) -> str:
+    return 'sig' + f'{sigma:g}'.replace('.', 'p')
+
+
+# (subcell, forcing bands, (sigma_obs_min, sigma_obs_max)). Cells sort l1 < l2 < sigma,
+# so the array-task indices of l1/l2 are unchanged by the sigma cell.
 CELLS = {
     'l1': [
         ('f6', ((6.0, 6.0),), EVAL_SIGMA_OBS),
         ('f10', ((10.0, 10.0),), EVAL_SIGMA_OBS),
     ],
     'l2': [
-        ('f8', ((8.0, 8.0),), EVAL_SIGMA_OBS),
+        ('f8', HELD_OUT_F, EVAL_SIGMA_OBS),
     ],
+    'sigma': [(_sigma_tag(sg), HELD_OUT_F, (sg, sg)) for sg in SIGMA_SWEEP],
 }
 
+
 def subcell_labels(cell: str) -> list[tuple[str, str]]:
-    return [(sc, f'sigma_obs {so[0]}-{so[1]}') for sc, _, so in CELLS[cell]]
+    return [(sc, f'F {fb[0][0]:g}, sigma_obs {so[0]:g}') for sc, fb, so in CELLS[cell]]
 
 
 DEFAULT_METHODS = (
@@ -110,7 +122,7 @@ def run_subcell(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='L96 experiment grid runner (L1/L2/L3).')
+    parser = argparse.ArgumentParser(description='L96 evaluation grid (l1: in-distribution F, l2: held-out F, sigma: held-out likelihoods).')
     parser.add_argument('cell', nargs='?', choices=sorted(CELLS))
     parser.add_argument('--model_dir', type=str, default=None)
     parser.add_argument('--output_dir', type=str, required=True)
