@@ -6,14 +6,19 @@ from jumanji.env import Environment
 
 from nbf.base_types import Observation, State
 from nbf.filters.particle import ParticleSet
+from nbf.filters.proposals import BootstrapProposal, Proposal
 
 
 class NeuralBayesianFilter(eqx.Module):
+    """Generate, propose, reweight, re-embed. The proposal (bootstrap by default) is
+    the only step that sees the domain's structure; see `nbf.filters.proposals`."""
+
     model: FlowEmbedding
     num_particles: int
+    proposal: Proposal = eqx.field(default_factory=BootstrapProposal)
 
     def __repr__(self) -> str:
-        return f'NBF ({self.num_particles})'
+        return f'NBF{self.proposal.tag} ({self.num_particles})'
 
     @eqx.filter_jit
     def sample(self, embedding: jax.Array, state: State, num_samples: int, key: jax.Array) -> State:
@@ -45,23 +50,21 @@ class NeuralBayesianFilter(eqx.Module):
         next_observation: Observation,
         key: jax.Array,
     ) -> tuple[ParticleSet, jax.Array, jax.Array]:
-        # Besides the stepped particle set, returns the uniform-fallback flags of the two
+        # Besides the proposed particle set, returns the uniform-fallback flags of the two
         # weighting passes: sampling (generated particles vs the current observation) and
-        # simulation (propagated particles vs the next observation).
-        sample_key, simulate_key = jax.random.split(key, 2)
+        # proposal (moved particles vs the next observation).
+        sample_key, propose_key = jax.random.split(key, 2)
 
         particles = self.sample(embedding, state, self.num_particles - 1, sample_key)
         particles = jax.tree.map(
             lambda x, y: jnp.concatenate([x, y[jnp.newaxis]], axis=0), particles, state
         )
         weights, sampling_fallback = self.compare_state_obs(env, particles, observation)
-        particle_set = ParticleSet(particles, weights)
-
-        particle_set, simulation_fallback = particle_set.simulate(
-            env, action, next_observation, simulate_key
+        particle_set, proposal_fallback = self.proposal.propose(
+            env, particles, weights, action, next_observation, propose_key
         )
 
-        return particle_set, sampling_fallback, simulation_fallback
+        return particle_set, sampling_fallback, proposal_fallback
 
     @eqx.filter_jit
     def update_particles(
