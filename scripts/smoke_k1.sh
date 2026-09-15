@@ -10,11 +10,14 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
+# Use the project venv when invoked outside `uv run`.
+if command -v python >/dev/null 2>&1; then PY=python; else PY="uv run python"; fi
+
 CONFIG="nbf/domains/pursuit_evasion/configs/smoke_k1.yaml"
 MODEL_DIR="results/pursuit_evasion/smoke"
 
 echo "=== [1/1] Train (on-policy, no corpus) ==="
-python -m nbf.domains.pursuit_evasion.train --config "$CONFIG" --set "save_path=$MODEL_DIR/"
+$PY -m nbf.domains.pursuit_evasion.train --config "$CONFIG" --set "save_path=$MODEL_DIR/"
 
 for f in model.eqx model_config.json data_config.json train_config.json train_log.jsonl; do
   test -f "$MODEL_DIR/$f" || { echo "FAIL: missing $MODEL_DIR/$f"; exit 1; }
