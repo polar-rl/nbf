@@ -98,3 +98,33 @@ class EnsembleKalmanFilter(eqx.Module):
             particles = jax.vmap(lambda f: state.from_flat_features(f))(features)
         weights = jnp.full(self.num_members, 1.0 / self.num_members)
         return ParticleSet(particles, weights)
+
+
+class LocalEnsembleTransformKalmanFilter(EnsembleKalmanFilter):
+    """LETKF (Hunt et al. 2007): deterministic ensemble transform with
+    observation-space localization, solved independently per grid point."""
+
+    def __repr__(self) -> str:
+        return f'LETKF ({self.num_members})'
+
+    def _analysis(self, X: jax.Array, observation: Observation, obs_idx, key: jax.Array):
+        del key
+        m, K = X.shape
+        xbar = jnp.mean(X, axis=0)
+        A = (X - xbar) * self.inflation
+        Yb = A[:, obs_idx]
+        d = observation.values - xbar[obs_idx]
+        rho = ring_taper(K, obs_idx, self.loc_radius)
+        inv_r = 1.0 / observation.sigma_obs**2
+        eye = (m - 1) * jnp.eye(m)
+
+        def _local(rho_g, a_g):
+            C = Yb * (rho_g * inv_r)[None, :]
+            evals, evecs = jnp.linalg.eigh(eye + C @ Yb.T)
+            evals = jnp.maximum(evals, 1e-6)
+            P = (evecs / evals) @ evecs.T
+            W = (evecs * jnp.sqrt((m - 1) / evals)) @ evecs.T
+            wbar = P @ (C @ d)
+            return (W + wbar[None, :]) @ a_g
+
+        return xbar + jax.vmap(_local, in_axes=(0, 1), out_axes=1)(rho, A)

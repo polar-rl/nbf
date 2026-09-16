@@ -35,6 +35,7 @@ FAMILIES = {
     'pf_op': ('PF-OP', plt.get_cmap('RdPu')),
     'pf': ('PF', plt.get_cmap('Oranges')),
     'enkf': ('EnKF', plt.get_cmap('Greens')),
+    'letkf': ('LETKF', plt.get_cmap('BuGn')),
     'gmf': ('GMF', plt.get_cmap('Greens')),
 }
 _FAMILY_ORDER = list(FAMILIES)

@@ -1,3 +1,4 @@
+import functools
 import os
 
 import equinox as eqx
@@ -23,7 +24,7 @@ from nbf.eval.samples import (
     nbf_samples_density_stream_batch,
     pf_reference_sample_stream_batch,
 )
-from nbf.filters.enkf import EnsembleKalmanFilter, ring_taper
+from nbf.filters.enkf import EnsembleKalmanFilter, LocalEnsembleTransformKalmanFilter, ring_taper
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.proposals import OptimalProposal
 from nbf.filters.particle import RegularizedParticleFilter, systematic_indices
@@ -48,6 +49,12 @@ def make_pf_rm(n: int) -> ResampleMoveParticleFilter:
 
 def make_enkf(m: int) -> EnsembleKalmanFilter:
     return EnsembleKalmanFilter(num_members=m, inflation=ENKF_INFLATION, loc_radius=ENKF_LOC_RADIUS)
+
+
+def make_letkf(m: int) -> LocalEnsembleTransformKalmanFilter:
+    return LocalEnsembleTransformKalmanFilter(
+        num_members=m, inflation=ENKF_INFLATION, loc_radius=ENKF_LOC_RADIUS
+    )
 
 
 @eqx.filter_jit
@@ -160,11 +167,12 @@ def _enkf_density_sampler(
     key,
     chunk_size=0,
     desc=None,
+    make=make_enkf,
     **_,
 ):
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
-    filt = make_enkf(n)
+    filt = make(n)
     rk, sk, samp_k = jax.random.split(key, 3)
     return chunked_stream(
         lambda *a: enkf_samples_density_stream_batch(env, filt, *a),
@@ -272,12 +280,14 @@ L96_EXTRA_SAMPLERS = {
     'pf_reg': filter_sampler(make_pf_reg),
     'pf_rm': filter_sampler(make_pf_rm),
     'enkf': filter_sampler(make_enkf),
+    'letkf': filter_sampler(make_letkf),
     'nbf_op': _nbf_op_sampler,
     'pf_op': _pf_op_sampler,
 }
 
 L96_EXTRA_DENSITY_SAMPLERS = {
     'enkf': _enkf_density_sampler,
+    'letkf': functools.partial(_enkf_density_sampler, make=make_letkf),
     'nbf_op': _nbf_op_density_sampler,
 }
 

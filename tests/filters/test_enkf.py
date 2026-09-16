@@ -4,7 +4,12 @@ import numpy as np
 import pytest
 
 from nbf.domains.lorenz96.env import Lorenz96Env, rk4_window
-from nbf.filters.enkf import EnsembleKalmanFilter, gaspari_cohn, ring_taper
+from nbf.filters.enkf import (
+    EnsembleKalmanFilter,
+    LocalEnsembleTransformKalmanFilter,
+    gaspari_cohn,
+    ring_taper,
+)
 
 K = 6
 SIGMA_DYN = 0.3
@@ -83,11 +88,18 @@ class TestGaspariCohn:
         assert taper[0, 4] == pytest.approx(0.0, abs=1e-6)
 
 
+FILTERS = {
+    'enkf': EnsembleKalmanFilter,
+    'letkf': LocalEnsembleTransformKalmanFilter,
+}
+
+
 class TestLinearModeKalman:
-    def test_matches_exact_kalman(self, env, key):
+    @pytest.mark.parametrize('name', list(FILTERS))
+    def test_matches_exact_kalman(self, env, key, name):
         reset_key, filt_key = jax.random.split(key)
         state, ts = env.reset(reset_key)
-        enkf = EnsembleKalmanFilter(num_members=4096, inflation=1.0, loc_radius=1e6)
+        enkf = FILTERS[name](num_members=4096, inflation=1.0, loc_radius=1e6)
         pset = enkf.reset(env, state, ts.observation, filt_key)
 
         obs_values = []
@@ -116,7 +128,8 @@ class TestLinearModeKalman:
 
 
 class TestLocalizedTracking:
-    def test_k40_fully_observed_tracks_truth(self, key):
+    @pytest.mark.parametrize('name', list(FILTERS))
+    def test_k40_fully_observed_tracks_truth(self, key, name):
         env = Lorenz96Env(
             K=40,
             time_limit=250,
@@ -126,7 +139,7 @@ class TestLocalizedTracking:
             f_bands=((8.0, 8.0),),
             obs_sites=tuple(range(40)),
         )
-        enkf = EnsembleKalmanFilter(num_members=20, inflation=1.05, loc_radius=4.0)
+        enkf = FILTERS[name](num_members=20, inflation=1.05, loc_radius=4.0)
         reset_key, scan_key = jax.random.split(key)
         state, ts = env.reset(reset_key)
         pset = enkf.reset(env, state, ts.observation, reset_key)
@@ -142,3 +155,20 @@ class TestLocalizedTracking:
         _, rmse = jax.lax.scan(step, (state, pset), jax.random.split(scan_key, 250))
         assert np.all(np.isfinite(np.asarray(rmse)))
         assert float(jnp.mean(rmse[100:])) < 1.0
+
+
+class TestLETKF:
+    def test_repr(self):
+        assert repr(LocalEnsembleTransformKalmanFilter(num_members=7)) == 'LETKF (7)'
+
+    def test_analysis_is_deterministic(self, env, key):
+        state, ts = env.reset(key)
+        letkf = LocalEnsembleTransformKalmanFilter(num_members=64, inflation=1.0, loc_radius=1e6)
+        pset = letkf.reset(env, state, ts.observation, key)
+        state, ts = env.step(state, 0, key)
+        X = env.state_array(pset.particles)
+        k1, k2 = jax.random.split(key)
+        a = letkf._analysis(X, ts.observation, env.obs_idx, k1)
+        b = letkf._analysis(X, ts.observation, env.obs_idx, k2)
+        assert np.allclose(np.asarray(a), np.asarray(b))
+        assert not np.allclose(np.asarray(a), np.asarray(X))

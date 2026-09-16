@@ -64,12 +64,13 @@ DEFAULT_METHODS = (
     'pf_1024,pf_8192,pf_65536,'
     'pf_reg_1024,pf_reg_8192,pf_reg_65536,'
     'pf_rm_1024,pf_rm_8192,pf_rm_65536,'
-    'enkf_20,enkf_50,enkf_100'
+    'enkf_20,enkf_50,enkf_100,'
+    'letkf_20,letkf_50,letkf_100'
 )
 
 # Methods with a native density, scored by the NLL of the true state. Particle
 # filters have none and get sample metrics only.
-DENSITY_KINDS = ('nbf', 'nbf_op', 'enkf')
+DENSITY_KINDS = ('nbf', 'nbf_op', 'enkf', 'letkf')
 
 
 def make_cell_env(data_cfg, f_bands, sigma_obs, episode_length: int) -> Lorenz96Env:
