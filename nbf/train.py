@@ -54,6 +54,7 @@ class OnPolicyTrainingConfig(_BaseTrainingConfig):
     micro_batches: int = 1  # gradient accumulation: batch_size rows in this many chunks
     val_episodes: int = 64
     val_interval: int = 5000
+    resume_interval_s: float = 1200.0  # rewrite the resume checkpoint this often (wall clock)
 
 
 def normalize_proposals(cfg: OnPolicyTrainingConfig) -> None:
@@ -317,6 +318,23 @@ def weighted_mean_rmse(features, weights, x_true, scale=1.0):
 # --------------------------------------------------------------------------------------
 
 
+def _rss_gb() -> float:
+    try:
+        with open('/proc/self/statm') as f:
+            return int(f.read().split()[1]) * os.sysconf('SC_PAGE_SIZE') / 1e9
+    except (OSError, ValueError):
+        import resource
+
+        return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1e6
+
+
+def _jit_cache_size(fn) -> int:
+    try:
+        return int(fn._cached._cache_size())
+    except AttributeError:
+        return -1
+
+
 def save_checkpoint(save_path, model, opt_state, step, numbered=False):
     with open(os.path.join(save_path, 'model.eqx'), 'wb') as f:
         eqx.tree_serialise_leaves(f, model)
@@ -384,6 +402,7 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
     log_path = os.path.join(cfg.save_path, 'train_log.jsonl')
     rollout_idx = step // tcfg.grad_steps_per_rollout
     t_start = time.time()
+    t_saved = time.time()
 
     while step < tcfg.num_iterations:
         # Keyed by rollout index so a resumed run replays the same episode stream.
@@ -421,6 +440,10 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
         t_train = time.time() - t0
         rollout_idx += 1
 
+        if tcfg.resume_interval_s > 0 and time.time() - t_saved > tcfg.resume_interval_s:
+            save_checkpoint(cfg.save_path, model, opt_state, step, numbered=False)
+            t_saved = time.time()
+
         record = {
             'step': step,
             'rollout': rollout_idx,
@@ -429,6 +452,8 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
             'rollout_s': round(t_roll, 2),
             'train_s': round(t_train, 2),
             'elapsed_h': round((time.time() - t_start) / 3600, 3),
+            'rss_gb': round(_rss_gb(), 2),
+            'rollout_jit_cache': _jit_cache_size(rollout_particle_sets),
             **rstats,
         }
 
