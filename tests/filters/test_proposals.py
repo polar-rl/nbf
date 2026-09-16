@@ -1,6 +1,6 @@
 """The proposal interface: bootstrap reproduces the pre-interface filter bit for bit,
-the optimal proposal is the same filter with a different proposal, and BETS's call
-surface (positional constructor, update/step/maybe_resample/sample) is unchanged."""
+the optimal proposal is the same filter with a different proposal, and the filter's
+public call surface (positional constructor, update/step/maybe_resample/sample) holds."""
 
 import os
 
@@ -12,7 +12,6 @@ from embedex.distributions.builder import create_model
 from nbf.domains.lorenz96.env import build_lorenz96_env
 from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
 from nbf.filters.particle import ParticleSet
 from nbf.filters.proposals import (
     BootstrapProposal,
@@ -81,14 +80,10 @@ def test_bootstrap_step_matches_pre_interface_algorithm(setup):
     assert bool(got_sampling == sampling_fallback) and bool(got_simulation == simulation_fallback)
 
 
-def test_optimal_class_is_filter_with_optimal_proposal(setup):
-    env, model, s0, o0, st, op, on = setup
-    a = OptimalProposalNeuralBayesianFilter(model, 32)
-    b = NeuralBayesianFilter(model, 32, proposal=OptimalProposal())
-    emb = a.reset(env, s0, o0, jax.random.PRNGKey(4))
-    key = jax.random.PRNGKey(5)
-    assert _tree_equal(a.update(env, emb, st, op, 0, on, key), b.update(env, emb, st, op, 0, on, key))
-    assert repr(a) == 'NBF-OP (32)' and repr(NeuralBayesianFilter(model, 32)) == 'NBF (32)'
+def test_repr_names_the_proposal(setup):
+    _, model, *_ = setup
+    assert repr(NeuralBayesianFilter(model, 32)) == 'NBF (32)'
+    assert repr(NeuralBayesianFilter(model, 32, proposal=OptimalProposal())) == 'NBF-OP (32)'
 
 
 def test_optimal_step_uses_optimal_proposal_particle_set(setup):
@@ -108,8 +103,8 @@ def test_optimal_step_uses_optimal_proposal_particle_set(setup):
     assert not bool(fallback)
 
 
-def test_bets_call_surface(setup):
-    # What bets imports and calls: positional constructor, sample, reset, update, step,
+def test_public_call_surface(setup):
+    # Downstream users call: positional constructor, sample, reset, update, step,
     # maybe_resample; update returns a 4-tuple headed by the embedding.
     env, model, s0, o0, st, op, on = setup
     filt = NeuralBayesianFilter(model, 32)

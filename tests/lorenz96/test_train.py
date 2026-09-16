@@ -10,7 +10,7 @@ from embedex.distributions.training import init_optimizer
 from nbf.domains.lorenz96.env import build_lorenz96_env
 from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
+from nbf.filters.proposals import BootstrapProposal, OptimalProposal
 from nbf.train import (
     collect_rollout,
     gold_loss,
@@ -35,7 +35,7 @@ SMOKE = os.path.join(
 @pytest.fixture(scope='module')
 def setup():
     cfg = load_config(
-        SMOKE, ['training.rollout_num_particles=32', 'training.episodes_per_rollout=3']
+        SMOKE, ['training.rollout_num_particles=32', 'training.episodes_per_rollout=4']
     )
     cfg.data.norm_mean, cfg.data.norm_std = 2.5, 3.9
     env = build_lorenz96_env(cfg.data)
@@ -54,10 +54,10 @@ def test_config_accepts_comma_separated_proposals():
     assert cfg.training.rollout_proposals == ['optimal', 'bootstrap']
 
 
-@pytest.mark.parametrize('cls', [NeuralBayesianFilter, OptimalProposalNeuralBayesianFilter])
-def test_update_is_update_particles_then_embed(setup, cls):
+@pytest.mark.parametrize('proposal', [BootstrapProposal(), OptimalProposal()])
+def test_update_is_update_particles_then_embed(setup, proposal):
     _, env, model = setup
-    filt = cls(model, num_particles=32)
+    filt = NeuralBayesianFilter(model, 32, proposal=proposal)
     eps = simulate_episodes(env, 1, jax.random.PRNGKey(1))
     one = lambda t: jax.tree.map(lambda x: x[0], t)  # noqa: E731
     s0, o0 = one(eps.state0), one(eps.obs0)
@@ -92,6 +92,22 @@ def test_rollout_shapes_and_normalization(setup):
         assert jnp.allclose(jnp.sum(buffer['weights'], axis=-1), 1.0, atol=1e-4)
         assert 0.0 <= stats['neff_over_n'] <= 1.0
         assert 0.0 <= stats['resample_frac'] <= 1.0
+
+
+def test_collect_rollout_splits_episodes_across_proposals(setup):
+    cfg, env, model = setup
+    tcfg = cfg.training
+    B, T, n, K = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, env.K
+    buffer, stats = collect_rollout(
+        env, model, ['bootstrap', 'optimal'], tcfg, simulate_episodes, jax.random.PRNGKey(21)
+    )
+    assert buffer['features'].shape == (B * (T + 1), n, K)
+    assert {'neff_over_n_bootstrap', 'neff_over_n_optimal'} <= set(stats)
+    # The optimal proposal keeps a higher ESS than the bootstrap on the same episodes.
+    assert stats['neff_over_n_optimal'] >= stats['neff_over_n_bootstrap']
+    with pytest.raises(ValueError):
+        tcfg_odd = load_config(SMOKE, ['training.episodes_per_rollout=3']).training
+        collect_rollout(env, model, ['bootstrap', 'optimal'], tcfg_odd, simulate_episodes, jax.random.PRNGKey(0))
 
 
 def test_rollout_row_zero_is_the_prior_set(setup):

@@ -24,7 +24,7 @@ SMOKE = os.path.join(
 
 
 def _setup(k: int):
-    cfg = load_config(SMOKE, [f'data.num_evaders={k}', 'training.episodes_per_rollout=3'])
+    cfg = load_config(SMOKE, [f'data.num_evaders={k}', 'training.episodes_per_rollout=4'])
     env = build_env(cfg.data)
     cfg.model.input_dim = cfg.model.output_dim = 2 * k
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
@@ -86,6 +86,18 @@ def test_collect_rollout_shapes(fixture, request):
     assert bool(jnp.all(jnp.isfinite(buffer['features'])))
     assert jnp.allclose(jnp.sum(buffer['weights'], axis=-1), 1.0, atol=1e-4)
     assert 0.0 <= stats['neff_over_n'] <= 1.0
+
+
+def test_slice_episodes_slices_batched_policies(setup_k2):
+    from nbf.train import _slice_episodes
+
+    _, env, _ = setup_k2
+    eps = simulate_episodes(env, 4, jax.random.PRNGKey(7))
+    part = _slice_episodes(eps, 1, 3)
+    assert part.x_norm.shape[0] == 2 and part.state0.positions.shape[0] == 2
+    assert part.env.policy[0].kind.shape == (2,)
+    assert bool(jnp.array_equal(part.env.policy[0].kind, eps.env.policy[0].kind[1:3]))
+    assert part.env.obstacles.shape == eps.env.obstacles.shape  # unbatched leaves untouched
 
 
 def test_train_step_reduces_loss_on_fixed_batch(setup_k1):

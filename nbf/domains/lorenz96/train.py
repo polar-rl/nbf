@@ -1,9 +1,8 @@
 """On-policy training of the Lorenz-96 NBF embedding (see nbf.train for the loop).
 
 Episodes are simulated on the fly; the filter is rolled out under each configured
-proposal (bootstrap and the locally optimal proposal by default, alternating per
-rollout so one checkpoint serves both eval rows). Design doc:
-agents/nbf/GOLD_STATE_TRAINING.md (polar-rl).
+proposal (bootstrap and the locally optimal proposal by default; each rollout's
+episodes are split across them so one checkpoint serves both eval rows).
 """
 
 import argparse

@@ -1,4 +1,3 @@
-# CPU smoke for lorenz96.train: exercises every code path in a minute or two, not a model.
 model:
   input_dim: 8
   output_dim: 8

@@ -24,7 +24,8 @@ from nbf.eval.samples import (
     pf_reference_sample_stream_batch,
 )
 from nbf.filters.enkf import EnsembleKalmanFilter, ring_taper
-from nbf.filters.nbf_op import OptimalProposalNeuralBayesianFilter
+from nbf.filters.nbf import NeuralBayesianFilter
+from nbf.filters.proposals import OptimalProposal
 from nbf.filters.particle import RegularizedParticleFilter, systematic_indices
 from nbf.filters.resample_move import ResampleMoveParticleFilter
 
@@ -192,7 +193,7 @@ def _nbf_op_sampler(
     desc=None,
     **_,
 ):
-    filt = OptimalProposalNeuralBayesianFilter(embedding_model, num_particles=n)
+    filt = NeuralBayesianFilter(embedding_model, n, proposal=OptimalProposal())
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
     rk, sk, samp_k = jax.random.split(key, 3)
@@ -224,7 +225,7 @@ def _nbf_op_density_sampler(
     desc=None,
     **_,
 ):
-    filt = OptimalProposalNeuralBayesianFilter(embedding_model, num_particles=n)
+    filt = NeuralBayesianFilter(embedding_model, n, proposal=OptimalProposal())
     dmodel = density_model if density_model is not None else embedding_model
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)

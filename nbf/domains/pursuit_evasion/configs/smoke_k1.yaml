@@ -1,5 +1,3 @@
-# k=1 smoke / integration config for pursuit_evasion.train + the PE grid: tiny model,
-# a dozen gradient steps, a few CPU minutes. Used by scripts/smoke_k1.sh.
 model:
   input_dim: 2
   output_dim: 2

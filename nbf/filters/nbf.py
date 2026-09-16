@@ -77,14 +77,6 @@ class NeuralBayesianFilter(eqx.Module):
         next_observation: Observation,
         key: jax.Array,
     ) -> tuple[ParticleSet, jax.Array, jax.Array, jax.Array]:
-        # The particle half of `update()`: everything up to, but not including, the
-        # re-embedding. Exposed so training can see the exact weighted set the filter
-        # would embed at this step (on-policy gold-state training).
-        # Generate a new gold state from the embedding so we can add it to the particle set
-        # for the update without cheating. `update_with_ground_truth` puts the gold state in
-        # directly, which is useful during search when we have already have a guess of the
-        # gold state that matches the observation sequence in the tree.
-
         key, sample_key, step_key, resample_key = jax.random.split(key, 4)
         state = jax.tree.map(lambda x: x[0], self.sample(embedding, state, 1, sample_key))
 
@@ -138,10 +130,6 @@ class NeuralBayesianFilter(eqx.Module):
         next_observation: Observation,
         key: jax.Array,
     ) -> tuple[jax.Array, jax.Array, jax.Array, jax.Array]:
-        # Same as `update()`, except we don't replace the gold state with a sample. This helps
-        # because we already have a state from simulation that matches the observation sequence
-        # in the tree. If the model is good, this only adds bias and we can revisit calling it.
-
         key, step_key, resample_key = jax.random.split(key, 3)
         particle_set, sampling_fallback, simulation_fallback = self.step(
             env, embedding, state, observation, action, next_observation, step_key
@@ -159,7 +147,6 @@ class NeuralBayesianFilter(eqx.Module):
     def reset_particles(
         self, env: Environment, state: State, observation: Observation, key: jax.Array
     ) -> tuple[jax.Array, jax.Array]:
-        # The prior particle set as (flat features, weights); `reset()` embeds it.
         keys = jax.random.split(key, self.num_particles)
         if getattr(env, 'has_prior_sampler', False):
             particles = jax.vmap(lambda k: env.sample_prior(state, k))(keys)

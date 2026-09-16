@@ -3,7 +3,7 @@ import jax.numpy as jnp
 import pytest
 
 from nbf.domains.lorenz96.env import OBS_SENTINEL, Lorenz96Env, Lorenz96Observation
-from nbf.filters.nbf_op import optimal_proposal_particle_set
+from nbf.filters.proposals import optimal_proposal_particle_set
 
 
 @pytest.fixture

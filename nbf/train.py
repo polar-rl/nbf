@@ -3,7 +3,7 @@
 No stored particle corpus and no reference filter. Episodes (true states and
 observations) are simulated on the fly, and the weighted particle sets the encoder
 sees are produced along each episode by the NBF filter itself, rolled out with the
-current parameters under each configured proposal. The loss at every step is the
+current parameters; each rollout's episodes are split across the configured proposals. The loss at every step is the
 generator objective (conditional flow matching for the FM generator, the exact NLL
 for a normalizing flow or autoregressive generator) evaluated at the single true
 state under the embedding of that step's set. Since (x_t, y_{1:t}) is a joint draw
@@ -183,19 +183,50 @@ def rollout_sets(rollout_model, proposal, cfg, eps: Episodes, reset_keys, step_k
     )
 
 
-def collect_rollout(env, rollout_model, proposal, cfg, simulate_episodes, key: Array):
-    """Simulate a batch of episodes, roll the filter along them, flatten to training rows."""
+def _slice_episodes(eps: Episodes, start: int, stop: int) -> Episodes:
+    """Episodes [start, stop) of a batch; per-episode env leaves are sliced with them."""
+    take = lambda x: x[start:stop]  # noqa: E731
+    env = eps.env
+    if eps.env_axes is not None:
+        env = jax.tree_util.tree_map(
+            lambda x, ax: take(x) if ax == 0 else x, eps.env, eps.env_axes,
+            is_leaf=lambda x: x is None,
+        )
+    return Episodes(
+        *(jax.tree.map(take, t) for t in (eps.state0, eps.obs0, eps.states_next, eps.obs_prev, eps.obs_next)),
+        take(eps.x_norm),
+        env,
+        eps.env_axes,
+    )
+
+
+def collect_rollout(env, rollout_model, proposals, cfg, simulate_episodes, key: Array):
+    """Simulate a batch of episodes, roll the filter along them under each proposal, and
+    flatten to training rows.
+
+    The episodes are split evenly across `proposals` (one string is one proposal), so
+    every gradient step draws from every proposal's set distribution and there is no
+    rollout-to-rollout alternation. Each proposal gets its own episodes; the rollout
+    cost is the same as a single-proposal rollout of the same batch.
+    """
+    if isinstance(proposals, str):
+        proposals = [proposals]
     ep_key, reset_key, step_key = jax.random.split(key, 3)
     B, T = cfg.episodes_per_rollout, env.time_limit
+    P = len(proposals)
+    if B % P:
+        raise ValueError(f'episodes_per_rollout {B} must be a multiple of {P} proposals')
     eps = simulate_episodes(env, B, ep_key)
-    feats, ws, neffs = rollout_sets(
-        rollout_model,
-        proposal,
-        cfg,
-        eps,
-        jax.random.split(reset_key, B),
-        jax.random.split(step_key, B * T).reshape(B, T, -1),
-    )
+    reset_keys = jax.random.split(reset_key, B)
+    step_keys = jax.random.split(step_key, B * T).reshape(B, T, -1)
+    parts = []
+    for i, proposal in enumerate(proposals):
+        lo, hi = i * B // P, (i + 1) * B // P
+        parts.append(
+            rollout_sets(rollout_model, proposal, cfg, _slice_episodes(eps, lo, hi),
+                         reset_keys[lo:hi], step_keys[lo:hi])
+        )
+    feats, ws, neffs = (jnp.concatenate([p[j] for p in parts], axis=0) for j in range(3))
     rows = B * (T + 1)
     n, D = feats.shape[-2], feats.shape[-1]
     buffer = {
@@ -207,6 +238,8 @@ def collect_rollout(env, rollout_model, proposal, cfg, simulate_episodes, key: A
         'neff_over_n': float(jnp.mean(neffs)) / cfg.rollout_num_particles,
         'resample_frac': float(jnp.mean(neffs < 0.5 * cfg.rollout_num_particles)),
     }
+    for proposal, (_, _, ne) in zip(proposals, parts, strict=True):
+        stats[f'neff_over_n_{proposal}'] = float(jnp.mean(ne)) / cfg.rollout_num_particles
     return buffer, stats
 
 
@@ -321,13 +354,12 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
     t_start = time.time()
 
     while step < tcfg.num_iterations:
-        proposal = proposals[rollout_idx % len(proposals)]
         # Keyed by rollout index so a resumed run replays the same episode stream.
         rk, tk, vk = jax.random.split(jax.random.fold_in(roll_key, rollout_idx), 3)
         rmodel = rollout_model_from(model, cfg.model, tcfg.rollout_fm_steps, tcfg.rollout_bf16, rk)
 
         t0 = time.time()
-        buffer, rstats = collect_rollout(env, rmodel, proposal, tcfg, simulate_episodes, rk)
+        buffer, rstats = collect_rollout(env, rmodel, proposals, tcfg, simulate_episodes, rk)
         t_roll = time.time() - t0
         rows = buffer['x_true'].shape[0]
 
@@ -359,7 +391,6 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
         record = {
             'step': step,
             'rollout': rollout_idx,
-            'proposal': proposal,
             'loss': float(np.mean(losses)),
             'emb_norm': float(np.mean(norms)),
             'rollout_s': round(t_roll, 2),
