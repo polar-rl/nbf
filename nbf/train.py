@@ -101,23 +101,35 @@ def make_filter(model, proposal: str, num_particles: int) -> NeuralBayesianFilte
     return NeuralBayesianFilter(model, num_particles, proposal=make_proposal(proposal))
 
 
-def rollout_model_from(model, model_cfg: ModelConfig, fm_steps: int, bf16: bool, key: Array):
-    """A copy of `model` for rollouts, optionally with fewer ODE steps and a bf16 velocity net.
+_ROLLOUT_TEMPLATES: dict = {}
 
-    `num_steps` is a static field, so the cheap ODE variant is built by instantiating the
-    generator with the modified config and swapping the trained velocity net into it.
+
+def _rollout_generator_template(model_cfg: ModelConfig, fm_steps: int, key: Array):
+    """The generator skeleton with `num_steps = fm_steps`, built once per config.
+
+    Rebuilding it every rollout gave `rollout_particle_sets` a fresh set of static leaves
+    each time, so the jitted rollout was retraced and recompiled on every call and the jit
+    cache grew without bound (host OOM after ~450 rollouts at K=40).
     """
-    if fm_steps and fm_steps != model_cfg.generator.fm_num_steps:
+    ck = (int(fm_steps), json.dumps(asdict(model_cfg), sort_keys=True, default=str))
+    if ck not in _ROLLOUT_TEMPLATES:
         import copy
 
         cfg = copy.deepcopy(model_cfg)
         cfg.generator.fm_num_steps = int(fm_steps)
-        template = create_model(cfg, dequantize=False, key=key)
-        # The velocity net carries every trained generator leaf; the template supplies the
-        # static `num_steps`. The encoder is shared by reference.
-        generator = eqx.tree_at(
-            lambda g: g.velocity_net, template.generator, model.generator.velocity_net
-        )
+        _ROLLOUT_TEMPLATES[ck] = create_model(cfg, dequantize=False, key=key).generator
+    return _ROLLOUT_TEMPLATES[ck]
+
+
+def rollout_model_from(model, model_cfg: ModelConfig, fm_steps: int, bf16: bool, key: Array):
+    """A copy of `model` for rollouts, optionally with fewer ODE steps and a bf16 velocity net.
+
+    `num_steps` is a static field, so the cheap ODE variant is the cached generator template
+    with the trained velocity net swapped in. The encoder is shared by reference.
+    """
+    if fm_steps and fm_steps != model_cfg.generator.fm_num_steps:
+        template = _rollout_generator_template(model_cfg, fm_steps, key)
+        generator = eqx.tree_at(lambda g: g.velocity_net, template, model.generator.velocity_net)
         model = eqx.tree_at(lambda m: m.generator, model, generator)
     if bf16:
         model = cast_velocity_net_bf16(model)
@@ -191,11 +203,16 @@ def _slice_episodes(eps: Episodes, start: int, stop: int) -> Episodes:
     env = eps.env
     if eps.env_axes is not None:
         env = jax.tree_util.tree_map(
-            lambda x, ax: take(x) if ax == 0 else x, eps.env, eps.env_axes,
+            lambda x, ax: take(x) if ax == 0 else x,
+            eps.env,
+            eps.env_axes,
             is_leaf=lambda x: x is None,
         )
     return Episodes(
-        *(jax.tree.map(take, t) for t in (eps.state0, eps.obs0, eps.states_next, eps.obs_prev, eps.obs_next)),
+        *(
+            jax.tree.map(take, t)
+            for t in (eps.state0, eps.obs0, eps.states_next, eps.obs_prev, eps.obs_next)
+        ),
         take(eps.x_norm),
         env,
         eps.env_axes,
@@ -225,8 +242,14 @@ def collect_rollout(env, rollout_model, proposals, cfg, simulate_episodes, key: 
     for i, proposal in enumerate(proposals):
         lo, hi = i * B // P, (i + 1) * B // P
         parts.append(
-            rollout_sets(rollout_model, proposal, cfg, _slice_episodes(eps, lo, hi),
-                         reset_keys[lo:hi], step_keys[lo:hi])
+            rollout_sets(
+                rollout_model,
+                proposal,
+                cfg,
+                _slice_episodes(eps, lo, hi),
+                reset_keys[lo:hi],
+                step_keys[lo:hi],
+            )
         )
     feats, ws, neffs = (jnp.concatenate([p[j] for p in parts], axis=0) for j in range(3))
     rows = B * (T + 1)
@@ -281,10 +304,10 @@ def train_step(model, optimizer, opt_state, features, weights, x_true, key, micr
 
         def _accumulate(carry, xs):
             f, w, x, k = xs
-            (l, nrm), g = eqx.filter_value_and_grad(gold_loss, has_aux=True)(model, f, w, x, k)
+            (li, nrm), g = eqx.filter_value_and_grad(gold_loss, has_aux=True)(model, f, w, x, k)
             acc, l_acc, n_acc = carry
             acc = jax.tree_util.tree_map(lambda a, b: a + b, acc, g)
-            return (acc, l_acc + l, n_acc + nrm), None
+            return (acc, l_acc + li, n_acc + nrm), None
 
         zeros = jax.tree_util.tree_map(jnp.zeros_like, params)
         (grads, loss, mean_norm), _ = jax.lax.scan(
@@ -403,6 +426,7 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
     rollout_idx = step // tcfg.grad_steps_per_rollout
     t_start = time.time()
     t_saved = time.time()
+    warned_retrace = False
 
     while step < tcfg.num_iterations:
         # Keyed by rollout index so a resumed run replays the same episode stream.
@@ -456,6 +480,11 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
             'rollout_jit_cache': _jit_cache_size(rollout_particle_sets),
             **rstats,
         }
+        if record['rollout_jit_cache'] > 4 * len(proposals) and not warned_retrace:
+            print(
+                '[warn] rollout_particle_sets is being retraced every rollout; host memory will grow'
+            )
+            warned_retrace = True
 
         if tcfg.val_interval > 0 and (
             step % tcfg.val_interval < tcfg.grad_steps_per_rollout or step >= tcfg.num_iterations
