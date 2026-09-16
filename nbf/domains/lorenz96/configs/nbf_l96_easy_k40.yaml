@@ -34,7 +34,7 @@ training:
   # On-policy rollouts: the NBF filter itself, current parameters, alternating the
   # listed proposals per rollout so one checkpoint serves every eval row.
   rollout_proposals: [bootstrap, optimal]
-  rollout_num_particles: 2048    # the deployment n
+  rollout_num_particles: 4096    # the largest eval row; eval sweeps 4096 -> 2048 -> 1024 from this checkpoint
   episodes_per_rollout: 64       # 64 x 21 = 1344 rows per rollout
   grad_steps_per_rollout: 40     # 40 x 256 = 10240 draws per rollout (~7.6 passes over the rows)
   rollout_fm_steps: 10           # ODE steps during on-policy rollouts; eval keeps 100
