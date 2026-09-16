@@ -51,6 +51,7 @@ class OnPolicyTrainingConfig(_BaseTrainingConfig):
     grad_steps_per_rollout: int = 20
     rollout_fm_steps: int = 0  # 0 = the model's own fm_num_steps (eval-faithful, slow)
     rollout_bf16: bool = False  # bf16 velocity net during rollouts only
+    micro_batches: int = 1  # gradient accumulation: batch_size rows in this many chunks
     val_episodes: int = 64
     val_interval: int = 5000
 
@@ -257,10 +258,41 @@ def gold_loss(model, features: Array, weights: Array, x_true: Array, key: Array)
 
 
 @eqx.filter_jit
-def train_step(model, optimizer, opt_state, features, weights, x_true, key):
-    (loss, mean_norm), grads = eqx.filter_value_and_grad(gold_loss, has_aux=True)(
-        model, features, weights, x_true, key
-    )
+def train_step(model, optimizer, opt_state, features, weights, x_true, key, micro_batches=1):
+    """One optimizer step on `batch_size` rows, with the gradient accumulated over
+    `micro_batches` equal chunks so activation memory scales with batch_size /
+    micro_batches (every row's set is embedded in full, so the encoder's activations
+    are what bound memory at large n and K)."""
+    M = int(micro_batches)
+    if M == 1:
+        (loss, mean_norm), grads = eqx.filter_value_and_grad(gold_loss, has_aux=True)(
+            model, features, weights, x_true, key
+        )
+    else:
+        rows = features.shape[0]
+        if rows % M:
+            raise ValueError(f'batch_size {rows} must be a multiple of micro_batches {M}')
+
+        def chunks(x):
+            return x.reshape((M, rows // M) + x.shape[1:])
+
+        params = eqx.filter(model, eqx.is_inexact_array)
+
+        def _accumulate(carry, xs):
+            f, w, x, k = xs
+            (l, nrm), g = eqx.filter_value_and_grad(gold_loss, has_aux=True)(model, f, w, x, k)
+            acc, l_acc, n_acc = carry
+            acc = jax.tree_util.tree_map(lambda a, b: a + b, acc, g)
+            return (acc, l_acc + l, n_acc + nrm), None
+
+        zeros = jax.tree_util.tree_map(jnp.zeros_like, params)
+        (grads, loss, mean_norm), _ = jax.lax.scan(
+            _accumulate,
+            (zeros, jnp.zeros(()), jnp.zeros(())),
+            (chunks(features), chunks(weights), chunks(x_true), jax.random.split(key, M)),
+        )
+        grads = jax.tree_util.tree_map(lambda g: g / M, grads)
+        loss, mean_norm = loss / M, mean_norm / M
     updates, opt_state = optimizer.update(grads, opt_state, model)
     model = eqx.apply_updates(model, updates)
     return model, opt_state, loss, mean_norm
@@ -378,6 +410,7 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
                 buffer['weights'][idx],
                 buffer['x_true'][idx],
                 step_key,
+                tcfg.micro_batches,
             )
             losses.append(float(loss))
             norms.append(float(mean_norm))
@@ -435,7 +468,7 @@ def validate(model, rollout_model, val_eps: Episodes, proposals, tcfg, key, rmse
         feats = feats.reshape(-1, n, D)
         ws = ws.reshape(-1, n)
         # Chunk the loss to bound memory; each chunk is a jitted call of fixed shape.
-        chunk = tcfg.batch_size
+        chunk = max(1, tcfg.batch_size // tcfg.micro_batches)
         rows = feats.shape[0]
         losses = []
         for s in range(0, rows - rows % chunk, chunk):

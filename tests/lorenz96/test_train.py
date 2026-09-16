@@ -149,6 +149,31 @@ def test_rollout_model_shares_params_and_changes_steps(setup):
     assert same is model
 
 
+def test_train_step_micro_batches(setup):
+    """Accumulated gradients train the same way as the one-shot step and are
+    deterministic; the CFM draws differ between the two paths, so compare progress, not
+    the exact numbers."""
+    cfg, env, model = setup
+    tcfg = cfg.training
+    buffer, _ = collect_rollout(env, model, 'bootstrap', tcfg, simulate_episodes, jax.random.PRNGKey(30))
+    idx = jnp.arange(16)
+    f, w, x = buffer['features'][idx], buffer['weights'][idx], buffer['x_true'][idx]
+    key = jax.random.PRNGKey(31)
+    tcfg.warmup_steps, tcfg.learning_rate, tcfg.num_iterations = 0, 1e-3, 100
+    optimizer, opt_state = init_optimizer(model, tcfg)
+    before = float(gold_loss(model, f, w, x, key)[0])
+    m4, s4 = model, opt_state
+    for _ in range(30):
+        m4, s4, loss, _ = train_step(m4, optimizer, s4, f, w, x, key, 4)
+        assert jnp.isfinite(loss)
+    assert float(gold_loss(m4, f, w, x, key)[0]) < before
+    a = train_step(model, optimizer, opt_state, f, w, x, key, 4)
+    b = train_step(model, optimizer, opt_state, f, w, x, key, 4)
+    assert float(a[2]) == float(b[2])
+    with pytest.raises(ValueError):
+        train_step(model, optimizer, opt_state, f, w, x, key, 3)
+
+
 def test_train_step_reduces_gold_loss_on_fixed_batch(setup):
     cfg, env, model = setup
     tcfg = cfg.training

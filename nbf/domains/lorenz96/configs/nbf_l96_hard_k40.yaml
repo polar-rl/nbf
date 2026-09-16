@@ -34,6 +34,7 @@ training:
   grad_steps_per_rollout: 40
   rollout_fm_steps: 10
   rollout_bf16: true
+  micro_batches: 8
   norm_episodes: 512
   val_episodes: 64
   val_interval: 5000
