@@ -143,7 +143,7 @@ def test_rollout_model_shares_params_and_changes_steps(setup):
     a = jax.tree.leaves(eqx.filter(model.generator.velocity_net, eqx.is_array))
     b = jax.tree.leaves(eqx.filter(rmodel.generator.velocity_net, eqx.is_array))
     assert all(jnp.array_equal(x, y) for x, y in zip(a, b, strict=True))
-    xs = jax.random.normal(jax.random.PRNGKey(8), (16, env.K))
+    xs = jax.random.normal(jax.random.PRNGKey(8), (16, 2 * env.K))
     w = jnp.full(16, 1 / 16)
     assert jnp.allclose(model.embed(xs, w)[0], rmodel.embed(xs, w)[0])
     # unchanged steps -> same object, no rebuild
