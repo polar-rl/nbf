@@ -60,9 +60,10 @@ class TestLorenz96:
     def test_columns_determine_the_scalar_weight(self):
         env = _l96()
         particles, state, _ = _particles(env, 16, jax.random.PRNGKey(2))
-        y = jnp.zeros(len(OBS))
+        y = jnp.mean(particles.x[:, list(OBS)], axis=0)
         obs = Lorenz96Observation(values=y, sigma_obs=state.sigma_obs)
         z = likelihood_features(env, particles, obs)
+        assert bool(jnp.all(jnp.abs(z) < RESIDUAL_CLIP))
         logw = -0.5 * jnp.sum(z**2, axis=-1)
         w = jax.nn.softmax(logw)
         w_env, _ = env.observation_weights(
