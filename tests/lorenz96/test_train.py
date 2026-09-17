@@ -3,6 +3,7 @@ import os
 import equinox as eqx
 import jax
 import jax.numpy as jnp
+import numpy as np
 import pytest
 from embedex.distributions.builder import create_model
 from embedex.distributions.training import init_optimizer
@@ -19,6 +20,7 @@ from nbf.train import (
     rollout_model_from,
     rollout_particle_sets,
     train_step,
+    validate,
 )
 
 SMOKE = os.path.join(
@@ -191,3 +193,16 @@ def test_train_step_reduces_gold_loss_on_fixed_batch(setup):
         model, opt_state, loss, _ = train_step(model, optimizer, opt_state, f, w, x, key)
     after = float(gold_loss(model, f, w, x, key)[0])
     assert after < before
+
+
+def test_validate_reports_posterior_and_forecast_rmse(setup):
+    cfg, env, model = setup
+    tcfg = cfg.training
+    tcfg.val_posterior_samples = 8
+    val_eps = simulate_episodes(env, 2, jax.random.PRNGKey(30))
+    rmodel = rollout_model_from(model, cfg.model, 3, False, jax.random.PRNGKey(31))
+    out = validate(model, rmodel, val_eps, ['bootstrap'], tcfg, jax.random.PRNGKey(32), 3.9)
+    v = out['bootstrap']
+    assert {'gold_loss', 'post_rmse', 'forecast_rmse', 'neff_over_n', 'resample_frac'} <= set(v)
+    assert all(np.isfinite(x) for x in v.values())
+    assert v['post_rmse'] > 0.0 and v['forecast_rmse'] > 0.0

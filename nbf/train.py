@@ -57,6 +57,7 @@ class OnPolicyTrainingConfig(_BaseTrainingConfig):
     micro_batches: int = 1  # gradient accumulation: batch_size rows in this many chunks
     val_episodes: int = 64
     val_interval: int = 5000
+    val_posterior_samples: int = 64  # generator samples per set for the validation RMSE
     resume_interval_s: float = 1200.0  # rewrite the resume checkpoint this often (wall clock)
 
 
@@ -333,11 +334,23 @@ def eval_loss(model, features, weights, x_true, key):
 
 @eqx.filter_jit
 def weighted_mean_rmse(features, weights, x_true, scale=1.0):
-    """RMSE of the weighted particle mean against the truth; `scale` maps normalized
-    coordinates back to state units."""
+    """RMSE of the weighted mean of the sets' state features (the forecast mean under
+    uniform weights) against the truth; `scale` maps normalized coordinates back to state
+    units. Only the leading state columns of `features` enter."""
+    states = features[..., : x_true.shape[-1]]
     w = weights / (jnp.sum(weights, axis=-1, keepdims=True) + 1e-30)
-    mean = jnp.sum(features * w[..., None], axis=-2)
+    mean = jnp.sum(states * w[..., None], axis=-2)
     return jnp.sqrt(jnp.mean((mean - x_true) ** 2)) * scale
+
+
+@eqx.filter_jit
+def posterior_mean_sq_error(model, features, weights, x_true, num_samples, key):
+    """Per-row squared error of the posterior mean (generator samples under each set's
+    embedding) against the truth, in normalized coordinates; the eval grid's RMSE."""
+    zs, _ = jax.vmap(model.embed)(features, weights)
+    keys = jax.random.split(key, zs.shape[0])
+    samples = jax.vmap(lambda z, k: model.generate(z, num_samples, key=k))(zs, keys)
+    return jnp.mean((jnp.mean(samples, axis=1) - x_true) ** 2, axis=-1)
 
 
 # --------------------------------------------------------------------------------------
@@ -506,7 +519,8 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
 
 
 def validate(model, rollout_model, val_eps: Episodes, proposals, tcfg, key, rmse_scale=1.0):
-    """Gold loss and weighted-mean RMSE on the fixed validation episodes, per proposal."""
+    """Gold loss, posterior-mean RMSE (generator samples, the eval grid's quantity) and
+    forecast-mean RMSE on the fixed validation episodes, per proposal, in state units."""
     x_all = val_eps.x_norm
     B, T = x_all.shape[0], x_all.shape[1] - 1
     x_norm = x_all.reshape(B * (T + 1), -1)
@@ -528,14 +542,22 @@ def validate(model, rollout_model, val_eps: Episodes, proposals, tcfg, key, rmse
         # Chunk the loss to bound memory; each chunk is a jitted call of fixed shape.
         chunk = max(1, tcfg.batch_size // tcfg.micro_batches)
         rows = feats.shape[0]
-        losses = []
+        losses, sq_errors = [], []
         for s in range(0, rows - rows % chunk, chunk):
-            lk, ck = jax.random.split(lk)
+            lk, ck, gk = jax.random.split(lk, 3)
             sl = slice(s, s + chunk)
             losses.append(float(eval_loss(model, feats[sl], ws[sl], x_norm[sl], ck)[0]))
+            sq_errors.append(
+                np.asarray(
+                    posterior_mean_sq_error(
+                        model, feats[sl], ws[sl], x_norm[sl], tcfg.val_posterior_samples, gk
+                    )
+                )
+            )
         out[proposal] = {
             'gold_loss': float(np.mean(losses)),
-            'wmean_rmse': float(weighted_mean_rmse(feats, ws, x_norm, rmse_scale)),
+            'post_rmse': float(np.sqrt(np.mean(np.concatenate(sq_errors)))) * float(rmse_scale),
+            'forecast_rmse': float(weighted_mean_rmse(feats, ws, x_norm, rmse_scale)),
             'neff_over_n': float(jnp.mean(neffs)) / tcfg.rollout_num_particles,
             'resample_frac': float(jnp.mean(neffs < 0.5 * tcfg.rollout_num_particles)),
         }
