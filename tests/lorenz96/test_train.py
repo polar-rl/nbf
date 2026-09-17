@@ -9,6 +9,7 @@ from embedex.distributions.training import init_optimizer
 
 from nbf.domains.lorenz96.env import build_lorenz96_env
 from nbf.domains.lorenz96.train import load_config, simulate_episodes
+from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.proposals import BootstrapProposal, OptimalProposal
 from nbf.train import (
@@ -39,7 +40,8 @@ def setup():
     )
     cfg.data.norm_mean, cfg.data.norm_std = 2.5, 3.9
     env = build_lorenz96_env(cfg.data)
-    cfg.model.input_dim = cfg.model.output_dim = cfg.data.K
+    cfg.model.output_dim = cfg.data.K
+    cfg.model.input_dim = cfg.data.K + likelihood_feature_dim(env)
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
     return cfg, env, model
 
@@ -85,11 +87,11 @@ def test_rollout_shapes_and_normalization(setup):
         buffer, stats = collect_rollout(
             env, model, proposal, tcfg, simulate_episodes, jax.random.PRNGKey(3)
         )
-        assert buffer['features'].shape == (B * (T + 1), n, K)
+        assert buffer['features'].shape == (B * (T + 1), n, 2 * K)
         assert buffer['weights'].shape == (B * (T + 1), n)
         assert buffer['x_true'].shape == (B * (T + 1), K)
         assert bool(jnp.all(jnp.isfinite(buffer['features'])))
-        assert jnp.allclose(jnp.sum(buffer['weights'], axis=-1), 1.0, atol=1e-4)
+        assert jnp.allclose(buffer['weights'], 1.0 / n, atol=1e-6)
         assert 0.0 <= stats['neff_over_n'] <= 1.0
         assert 0.0 <= stats['resample_frac'] <= 1.0
 
@@ -101,7 +103,7 @@ def test_collect_rollout_splits_episodes_across_proposals(setup):
     buffer, stats = collect_rollout(
         env, model, ['bootstrap', 'optimal'], tcfg, simulate_episodes, jax.random.PRNGKey(21)
     )
-    assert buffer['features'].shape == (B * (T + 1), n, K)
+    assert buffer['features'].shape == (B * (T + 1), n, 2 * K)
     assert {'neff_over_n_bootstrap', 'neff_over_n_optimal'} <= set(stats)
     # The optimal proposal keeps a higher ESS than the bootstrap on the same episodes.
     assert stats['neff_over_n_optimal'] >= stats['neff_over_n_bootstrap']

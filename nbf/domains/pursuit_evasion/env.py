@@ -306,6 +306,26 @@ class PursuitEvasionEnv(eqx.Module):
         # We never discard an observation, so the uniform-fallback flag is always False here.
         return weights, jnp.array(False)
 
+    @property
+    def likelihood_feature_dim(self) -> int:
+        return 1 if (self.shuffle_observations and self.num_evaders > 1) else self.num_evaders
+
+    def likelihood_features(self, particles, observation) -> jax.Array:
+        """Labelled ranges: (n, k) standardized range residuals, one Gaussian factor per
+        evader. Shuffled ranges do not factor, so the feature is the (n, 1) max-shifted
+        log-likelihood. Zero when no observation is present."""
+        from nbf.filters.likelihood import LOG_FEATURE_FLOOR, RESIDUAL_CLIP
+
+        has_obs = self.observation_present(observation)
+        if self.shuffle_observations and self.num_evaders > 1:
+            lp = self.observation_log_prob(particles.positions, observation)
+            feat = jnp.maximum(lp - jnp.max(lp), LOG_FEATURE_FLOOR)[:, None]
+        else:
+            pred_ranges = jnp.linalg.norm(particles.positions - SENSOR_POS, axis=-1)
+            z = (observation.ranges - pred_ranges) / observation.observation_sigma
+            feat = jnp.clip(z, -RESIDUAL_CLIP, RESIDUAL_CLIP)
+        return jnp.where(has_obs, feat, 0.0)
+
     def state_array(self, state) -> jax.Array:
         return state.positions
 

@@ -258,6 +258,21 @@ class Lorenz96Env(eqx.Module):
         )
         return weights, jnp.array(False)
 
+    @property
+    def likelihood_feature_dim(self) -> int:
+        return self.K
+
+    def likelihood_features(self, particles, observation) -> jax.Array:
+        """(n, K) standardized residuals (y_k - x_k) / sigma_obs at the observed sites,
+        zero elsewhere and zero when no observation is present. Each column is a sufficient
+        statistic of that site's Gaussian likelihood factor."""
+        from nbf.filters.likelihood import RESIDUAL_CLIP
+
+        has_obs = observation.values[0] > _OBS_PRESENT_THRESHOLD
+        z = (observation.values - particles.x[:, self.obs_idx]) / observation.sigma_obs
+        z = jnp.clip(jnp.where(has_obs, z, 0.0), -RESIDUAL_CLIP, RESIDUAL_CLIP)
+        return jnp.zeros((particles.x.shape[0], self.K)).at[:, self.obs_idx].set(z)
+
     def state_array(self, state) -> jax.Array:
         return state.x
 

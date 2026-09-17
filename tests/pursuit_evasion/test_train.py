@@ -15,6 +15,7 @@ from nbf.domains.pursuit_evasion.train import (
     sample_policy_batch,
     simulate_episodes,
 )
+from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.train import collect_rollout, gold_loss, train_step
 
 SMOKE = os.path.join(
@@ -26,7 +27,8 @@ SMOKE = os.path.join(
 def _setup(k: int):
     cfg = load_config(SMOKE, [f'data.num_evaders={k}', 'training.episodes_per_rollout=4'])
     env = build_env(cfg.data)
-    cfg.model.input_dim = cfg.model.output_dim = 2 * k
+    cfg.model.output_dim = 2 * k
+    cfg.model.input_dim = 2 * k + likelihood_feature_dim(env)
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
     return cfg, env, model
 
@@ -80,7 +82,7 @@ def test_collect_rollout_shapes(fixture, request):
     tcfg = cfg.training
     B, T, n, D = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, 2 * env.num_evaders
     buffer, stats = collect_rollout(env, model, 'bootstrap', tcfg, simulate_episodes, jax.random.PRNGKey(4))
-    assert buffer['features'].shape == (B * (T + 1), n, D)
+    assert buffer['features'].shape == (B * (T + 1), n, D + env.num_evaders)
     assert buffer['weights'].shape == (B * (T + 1), n)
     assert buffer['x_true'].shape == (B * (T + 1), D)
     assert bool(jnp.all(jnp.isfinite(buffer['features'])))

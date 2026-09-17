@@ -14,6 +14,7 @@ from embedex.distributions.builder import create_model
 
 from nbf.domains.lorenz96.env import build_lorenz96_env
 from nbf.domains.lorenz96.train import load_config, simulate_episodes
+from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.proposals import BootstrapProposal, OptimalProposal
 
@@ -33,7 +34,8 @@ def main() -> None:
     cfg = load_config(SMOKE, [])
     cfg.data.norm_mean, cfg.data.norm_std = 2.5, 3.9
     env = build_lorenz96_env(cfg.data)
-    cfg.model.input_dim = cfg.model.output_dim = cfg.data.K
+    cfg.model.output_dim = cfg.data.K
+    cfg.model.input_dim = cfg.data.K + likelihood_feature_dim(env)
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
     eps = simulate_episodes(env, 1, jax.random.PRNGKey(1))
     one = lambda t: jax.tree.map(lambda x: x[0], t)  # noqa: E731

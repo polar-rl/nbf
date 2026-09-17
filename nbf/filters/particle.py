@@ -18,6 +18,7 @@ def systematic_indices(weights: jax.Array, key: jax.Array) -> jax.Array:
 class ParticleSet(eqx.Module):
     particles: State
     weights: jax.Array
+    features: jax.Array | None = None
 
     @eqx.filter_jit
     def simulate(

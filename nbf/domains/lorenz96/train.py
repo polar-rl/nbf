@@ -20,6 +20,7 @@ from nbf.config import apply_overrides, build_dataclass
 from nbf.domains.lorenz96.config import DataConfig
 from nbf.domains.lorenz96.env import Lorenz96Env, build_lorenz96_env
 from nbf.eval.base import env_rollout_batch
+from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.train import Episodes, OnPolicyTrainingConfig, normalize_proposals
 from nbf.train import run as _run
 
@@ -101,7 +102,8 @@ def run(cfg: Config) -> None:
         f'Climatological normalization: mean={cfg.data.norm_mean:.4f} '
         f'std={cfg.data.norm_std:.4f} (from {tcfg.norm_episodes} episodes)'
     )
-    cfg.model.input_dim = cfg.model.output_dim = int(cfg.data.K)
+    cfg.model.output_dim = int(cfg.data.K)
+    cfg.model.input_dim = int(cfg.data.K) + likelihood_feature_dim(env)
     _run(cfg, env=env, simulate_episodes=simulate_episodes, rmse_scale=cfg.data.norm_std)
 
 

@@ -1,20 +1,23 @@
 """On-policy training of an NBF embedding, shared by every domain.
 
 No stored particle corpus and no reference filter. Episodes (true states and
-observations) are simulated on the fly, and the weighted particle sets the encoder
-sees are produced along each episode by the NBF filter itself, rolled out with the
-current parameters; each rollout's episodes are split across the configured proposals. The loss at every step is the
-generator objective (conditional flow matching for the FM generator, the exact NLL
-for a normalizing flow or autoregressive generator) evaluated at the single true
-state under the embedding of that step's set. Since (x_t, y_{1:t}) is a joint draw
-from the model, this is a proper scoring rule whose population minimizer is
-p(x_t | particle set).
+observations) are simulated on the fly, and the particle sets the encoder sees are
+produced along each episode by the NBF filter itself, rolled out with the current
+parameters; each rollout's episodes are split across the configured proposals. A set is
+the forecast particles together with their likelihood features (`nbf.filters.likelihood`)
+under uniform weights. The loss at every step is the generator objective (conditional
+flow matching for the FM generator, the exact NLL for a normalizing flow or
+autoregressive generator) evaluated at the single true state under the embedding of that
+step's set. Since (x_t, y_{1:t}) is a joint draw from the model, this is a proper scoring
+rule whose population minimizer is p(x_t | set), the filtering posterior in the limit of
+the set.
 
 The rollout is treated as data: gradients flow through `embed` and `generator.loss`
 for the step being scored, never through the rollout. A domain supplies an env, a
 `simulate_episodes(env, num_episodes, key) -> Episodes` function and a `Config`;
 everything else lives here. See `nbf.domains.lorenz96.train` for the pattern.
 """
+
 
 import json
 import os
@@ -151,9 +154,10 @@ def rollout_particle_sets(
 ):
     """Run the filter along each episode and return every weighted set it embeds.
 
-    Returns features (B, T + 1, n, D) in normalized coordinates, weights (B, T + 1, n),
-    and neff (B, T) for the T update steps. Row t of the leading time axis is the set
-    whose embedding represents the belief over x_t (row 0 is the prior set).
+    Returns encoder inputs (B, T + 1, n, D + d) (normalized state features and likelihood
+    features), their uniform weights (B, T + 1, n), and neff (B, T) for the T update steps.
+    Row t of the leading time axis is the set whose embedding represents the belief over
+    x_t (row 0 is the prior set).
     """
 
     def _one(env, state0, obs0, states_next, obs_prev, obs_next, rkey, step_keys):
@@ -165,9 +169,9 @@ def rollout_particle_sets(
             pset, neff, _, _ = filt.update_particles(
                 env, embedding, state_t, prev_obs_t, 0, next_obs_t, sk
             )
-            feats = jax.vmap(lambda p: p.to_flat_features())(pset.particles)
-            embedding = filt.model.embed(feats, pset.weights)[0]
-            return embedding, (feats, pset.weights, neff)
+            feats, ws = filt.encoder_input(pset)
+            embedding = filt.model.embed(feats, ws)[0]
+            return embedding, (feats, ws, neff)
 
         _, (feats, ws, neffs) = jax.lax.scan(
             _step, emb0, (step_keys, states_next, obs_prev, obs_next)
@@ -253,11 +257,11 @@ def collect_rollout(env, rollout_model, proposals, cfg, simulate_episodes, key: 
         )
     feats, ws, neffs = (jnp.concatenate([p[j] for p in parts], axis=0) for j in range(3))
     rows = B * (T + 1)
-    n, D = feats.shape[-2], feats.shape[-1]
+    n, D_in = feats.shape[-2], feats.shape[-1]
     buffer = {
-        'features': feats.reshape(rows, n, D),
+        'features': feats.reshape(rows, n, D_in),
         'weights': ws.reshape(rows, n),
-        'x_true': eps.x_norm.reshape(rows, D),
+        'x_true': eps.x_norm.reshape(rows, eps.x_norm.shape[-1]),
     }
     stats = {
         'neff_over_n': float(jnp.mean(neffs)) / cfg.rollout_num_particles,

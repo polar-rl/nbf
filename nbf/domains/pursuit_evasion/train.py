@@ -25,6 +25,7 @@ from nbf.domains.pursuit_evasion.env import (
     normalize_positions,
 )
 from nbf.domains.pursuit_evasion.policies import sample_in_dist_tuple
+from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.train import Episodes, OnPolicyTrainingConfig, normalize_proposals
 from nbf.train import run as _run
 
@@ -136,7 +137,8 @@ def simulate_episodes(env: PursuitEvasionEnv, num_episodes: int, key: Array) -> 
 
 def run(cfg: Config) -> None:
     env = build_env(cfg.data)
-    cfg.model.input_dim = cfg.model.output_dim = 2 * int(cfg.data.num_evaders)
+    cfg.model.output_dim = 2 * int(cfg.data.num_evaders)
+    cfg.model.input_dim = cfg.model.output_dim + likelihood_feature_dim(env)
     _run(cfg, env=env, simulate_episodes=simulate_episodes, rmse_scale=0.5 * L)
 
 
