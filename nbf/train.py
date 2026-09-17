@@ -540,8 +540,8 @@ def validate(model, rollout_model, val_eps: Episodes, proposals, tcfg, key, rmse
         feats = feats.reshape(-1, n, D)
         ws = ws.reshape(-1, n)
         # Chunk the loss to bound memory; each chunk is a jitted call of fixed shape.
-        chunk = max(1, tcfg.batch_size // tcfg.micro_batches)
         rows = feats.shape[0]
+        chunk = max(1, min(tcfg.batch_size // tcfg.micro_batches, rows))
         losses, sq_errors = [], []
         for s in range(0, rows - rows % chunk, chunk):
             lk, ck, gk = jax.random.split(lk, 3)
