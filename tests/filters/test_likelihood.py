@@ -13,6 +13,7 @@ from nbf.domains.pursuit_evasion.env import (
 )
 from nbf.filters.likelihood import (
     LOG_FEATURE_FLOOR,
+    RESIDUAL_CLIP,
     likelihood_feature_dim,
     likelihood_features,
     scalar_log_weight_features,
@@ -46,7 +47,8 @@ class TestLorenz96:
         unobserved = [k for k in range(K) if k not in OBS]
         assert np.all(z[:, unobserved] == 0.0)
         expected = (np.asarray(y) - np.asarray(particles.x)[:, list(OBS)]) / float(state.sigma_obs)
-        assert np.allclose(z[:, list(OBS)], expected, atol=1e-5)
+        assert np.allclose(z[:, list(OBS)], np.clip(expected, -RESIDUAL_CLIP, RESIDUAL_CLIP), atol=1e-5)
+        assert np.any(np.abs(z[:, list(OBS)]) < RESIDUAL_CLIP)
 
     def test_absent_observation_is_zero(self):
         env = _l96()
