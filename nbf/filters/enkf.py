@@ -28,7 +28,25 @@ def ring_taper(K: int, obs_idx: jax.Array, radius: float) -> jax.Array:
     return gaspari_cohn(d / radius)
 
 
+OBSERVATION_OPERATOR_HOOKS = (
+    'predicted_observation',
+    'observation_vector',
+    'observation_noise_std',
+)
+
+
 class EnsembleKalmanFilter(eqx.Module):
+    """Stochastic (perturbed-observation) EnKF, Burgers et al. (1998).
+
+    Two analysis paths, depending on the environment:
+    - `env.obs_idx` present (Lorenz-96): the observation reads coordinates directly, and
+      the ensemble covariance is tapered by Gaspari-Cohn at `loc_radius` on the ring.
+    - otherwise the environment supplies an observation operator through the hooks in
+      `OBSERVATION_OPERATOR_HOOKS` (pursuit-evasion: sorted ranges). The analysis uses
+      the ensemble cross-covariance between states and predicted observations, with no
+      localization, and the analysed members pass through `env.constrain` when present.
+    """
+
     num_members: int
     inflation: float = 1.05
     loc_radius: float = 4.0
@@ -59,6 +77,33 @@ class EnsembleKalmanFilter(eqx.Module):
         innovations = observation.values + eta - X[:, obs_idx]
         return X + innovations @ jnp.linalg.solve(S, PH.T)
 
+    def _analysis_operator(self, env: Environment, X: jax.Array, observation, key: jax.Array):
+        m = X.shape[0]
+        xbar = jnp.mean(X, axis=0)
+        A = (X - xbar) * self.inflation
+        X = xbar + A
+        Z = env.predicted_observation(X)
+        y = env.observation_vector(observation)
+        sigma = env.observation_noise_std(observation)
+        Yb = Z - jnp.mean(Z, axis=0)
+        Pxz = A.T @ Yb / (m - 1)
+        S = Yb.T @ Yb / (m - 1) + sigma**2 * jnp.eye(Z.shape[1])
+        eta = sigma * jax.random.normal(key, Z.shape)
+        eta = eta - jnp.mean(eta, axis=0)
+        innovations = y + eta - Z
+        return X + innovations @ jnp.linalg.solve(S, Pxz.T)
+
+    def _analyse(self, env: Environment, X: jax.Array, observation, key: jax.Array):
+        if hasattr(env, 'obs_idx'):
+            return self._analysis(X, observation, env.obs_idx, key)
+        missing = [h for h in OBSERVATION_OPERATOR_HOOKS if not hasattr(env, h)]
+        if missing:
+            raise ValueError(f'{self!r} requires env.obs_idx or the hooks {missing}')
+        shape = X.shape
+        flat = self._analysis_operator(env, X.reshape(shape[0], -1), observation, key)
+        X = flat.reshape(shape)
+        return env.constrain(X) if hasattr(env, 'constrain') else X
+
     @eqx.filter_jit
     def update(
         self,
@@ -77,7 +122,7 @@ class EnsembleKalmanFilter(eqx.Module):
         X = env.state_array(particles)
         X = jax.lax.cond(
             env.observation_present(next_observation),
-            lambda: self._analysis(X, next_observation, env.obs_idx, perturb_key),
+            lambda: self._analyse(env, X, next_observation, perturb_key),
             lambda: X,
         )
         particles = env.replace_state_array(particles, X)
@@ -106,6 +151,9 @@ class LocalEnsembleTransformKalmanFilter(EnsembleKalmanFilter):
 
     def __repr__(self) -> str:
         return f'LETKF ({self.num_members})'
+
+    def _analysis_operator(self, env, X, observation, key):
+        raise ValueError('LETKF localizes by site and needs env.obs_idx')
 
     def _analysis(self, X: jax.Array, observation: Observation, obs_idx, key: jax.Array):
         del key

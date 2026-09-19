@@ -208,12 +208,15 @@ def score_methods(
     chunk_size: int,
     timing_repeats: int,
     t_min: int,
+    relabel_perms=None,
 ) -> dict:
     """Run every method on one batch of episodes and return {spec: {metric: (N, T)}}.
 
     `episodes` is (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b) and
     `truth` the (N, T, *state) array the sample metrics score against. Methods whose
-    kind is in `density_kinds` also get the NLL of the true state.
+    kind is in `density_kinds` also get the NLL of the true state. `relabel_perms`
+    (P, k) relabels exchangeable state components to the truth before the sample
+    metrics (`nbf.eval.metrics.relabel_samples_to_truth`); the NLL is unaffected.
     """
     state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = episodes
     common = dict(
@@ -246,7 +249,7 @@ def score_methods(
             samples = compute_samples(
                 spec, key=method_key, chunk_size=chunk_size, desc=f'{spec} samples', **common
             )
-        res = sample_metrics_per_step(samples, truth)
+        res = sample_metrics_per_step(samples, truth, relabel_perms=relabel_perms)
         if density is not None:
             res.update({name: np.asarray(v) for name, v in density.items()})
         if timing_repeats > 0:

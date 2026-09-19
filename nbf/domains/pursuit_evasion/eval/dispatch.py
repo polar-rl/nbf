@@ -1,3 +1,5 @@
+import os
+
 import jax
 from jax import Array
 
@@ -7,14 +9,16 @@ from nbf.domains.pursuit_evasion.eval.samples import (
     gmf_samples_density_stream_batch,
 )
 from nbf.eval.base import batch_size, chunked_stream, split_T, time_len
-from nbf.filters.particle import RegularizedParticleFilter
 from nbf.eval.dispatch import (
     compute_method_samples as _compute_method_samples,
 )
-from nbf.eval.dispatch import filter_sampler
 from nbf.eval.dispatch import (
     compute_method_samples_and_density as _compute_method_samples_and_density,
 )
+from nbf.eval.dispatch import filter_sampler
+from nbf.eval.samples import gaussian_filter_samples_density_stream_batch
+from nbf.filters.enkf import EnsembleKalmanFilter
+from nbf.filters.particle import RegularizedParticleFilter
 
 
 def _gmf_sampler(
@@ -74,14 +78,55 @@ def _gmf_density_sampler(
 
 
 PE_PF_REG_BANDWIDTH_SCALE = 1.0
+PE_ENKF_INFLATION = float(os.environ.get('NBF_PE_ENKF_INFLATION', 1.05))
 
 
 def make_pe_pf_reg(n: int) -> RegularizedParticleFilter:
     return RegularizedParticleFilter(num_particles=n, bandwidth_scale=PE_PF_REG_BANDWIDTH_SCALE)
 
 
-PE_EXTRA_SAMPLERS = {'gmf': _gmf_sampler, 'pf_reg': filter_sampler(make_pe_pf_reg)}
-PE_EXTRA_DENSITY_SAMPLERS = {'gmf': _gmf_density_sampler}
+def make_pe_enkf(m: int) -> EnsembleKalmanFilter:
+    """Stochastic EnKF on the sorted-range observation operator of the PE env; no
+    localization (one sensor), so `loc_radius` is unused."""
+    return EnsembleKalmanFilter(num_members=m, inflation=PE_ENKF_INFLATION)
+
+
+def _enkf_density_sampler(
+    n,
+    *,
+    env,
+    state0_b,
+    obs0_b,
+    states_next_b,
+    obs_prev_b,
+    obs_next_b,
+    num_ref_samples,
+    key,
+    chunk_size=0,
+    desc=None,
+    **_,
+):
+    filt = make_pe_enkf(n)
+    N = batch_size(state0_b)
+    T = time_len(obs_prev_b)
+    rk, sk, samp_k = jax.random.split(key, 3)
+    return chunked_stream(
+        lambda *a: gaussian_filter_samples_density_stream_batch(env, filt, *a),
+        (state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b),
+        (jax.random.split(rk, N), split_T(sk, N, T), split_T(samp_k, N, T)),
+        (num_ref_samples,),
+        N,
+        chunk_size,
+        desc=desc,
+    )
+
+
+PE_EXTRA_SAMPLERS = {
+    'gmf': _gmf_sampler,
+    'pf_reg': filter_sampler(make_pe_pf_reg),
+    'enkf': filter_sampler(make_pe_enkf),
+}
+PE_EXTRA_DENSITY_SAMPLERS = {'gmf': _gmf_density_sampler, 'enkf': _enkf_density_sampler}
 
 
 def compute_method_samples(spec: str, **kwargs) -> Array:

@@ -355,6 +355,27 @@ class PursuitEvasionEnv(eqx.Module):
     def observation_present(self, observation) -> jax.Array:
         return observation.ranges[0] >= 0.0
 
+    # Observation operator for ensemble Kalman filters (`nbf.filters.enkf`). A Kalman
+    # update needs an innovation whose components line up, so under shuffled ranges the
+    # operator sorts: the predicted ranges of every member and the observed ranges are
+    # compared in ascending order, which is a deterministic function of the state and
+    # needs no assignment of ranges to evaders. Labelled ranges are compared as they are.
+    def _canonical_ranges(self, ranges: jax.Array) -> jax.Array:
+        if self.shuffle_observations and self.num_evaders > 1:
+            return jnp.sort(ranges, axis=-1)
+        return ranges
+
+    def predicted_observation(self, flat: jax.Array) -> jax.Array:
+        """(m, 2k) flat positions -> (m, k) ranges in the order the operator compares."""
+        pos = flat.reshape(flat.shape[0], self.num_evaders, 2)
+        return self._canonical_ranges(jnp.linalg.norm(pos - SENSOR_POS, axis=-1))
+
+    def observation_vector(self, observation) -> jax.Array:
+        return self._canonical_ranges(observation.ranges)
+
+    def observation_noise_std(self, observation) -> jax.Array:
+        return observation.observation_sigma
+
 
 def build_pursuit_evasion_env(
     num_evaders: int = 1,

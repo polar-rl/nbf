@@ -1,5 +1,6 @@
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 from jax import Array
 
 from nbf.filters.nbf import NeuralBayesianFilter
@@ -133,6 +134,59 @@ def nbf_samples_density_stream_batch(
 
         _, (samps, lp_true) = jax.lax.scan(
             _step, embedding, (step_keys, sample_keys, states_next, obs_prev, obs_next)
+        )
+        return samps, lp_true
+
+    return jax.vmap(_one)(
+        state0_b,
+        obs0_b,
+        states_next_b,
+        obs_prev_b,
+        obs_next_b,
+        reset_keys,
+        step_keys_b,
+        sample_keys_b,
+    )
+
+
+@eqx.filter_jit
+def gaussian_filter_samples_density_stream_batch(
+    env,
+    filt,
+    state0_b,
+    obs0_b,
+    states_next_b,
+    obs_prev_b,
+    obs_next_b,
+    reset_keys: Array,
+    step_keys_b: Array,
+    sample_keys_b: Array,
+    num_ref_samples: int,
+):
+    def _gauss_logp(pset, x_true):
+        X = env.state_array(pset.particles)
+        X = X.reshape(X.shape[0], -1)
+        x = x_true.reshape(-1)
+        mu = jnp.mean(X, axis=0)
+        A = X - mu
+        cov = A.T @ A / (X.shape[0] - 1) + 1e-4 * jnp.eye(X.shape[1])
+        chol = jnp.linalg.cholesky(cov)
+        log_det = 2.0 * jnp.sum(jnp.log(jnp.diag(chol)))
+        sol = jax.scipy.linalg.solve_triangular(chol, x - mu, lower=True)
+        return -0.5 * (jnp.sum(sol * sol) + log_det + x.shape[0] * jnp.log(2.0 * jnp.pi))
+
+    def _one(state0, obs0, states_next, obs_prev, obs_next, rkey, step_keys, sample_keys):
+        pset = filt.reset(env, state0, obs0, rkey)
+
+        def _step(pset, xs):
+            sk, samp_k, state_t, prev_obs_t, next_obs_t = xs
+            pset, _, _, _ = filt.update(env, pset, state_t, prev_obs_t, 0, next_obs_t, sk)
+            samps = env.state_array(filt.sample(pset, state_t, num_ref_samples, samp_k))
+            lp_true = _gauss_logp(pset, env.state_array(state_t))
+            return pset, (samps, lp_true)
+
+        _, (samps, lp_true) = jax.lax.scan(
+            _step, pset, (step_keys, sample_keys, states_next, obs_prev, obs_next)
         )
         return samps, lp_true
 

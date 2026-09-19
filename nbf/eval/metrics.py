@@ -4,7 +4,6 @@ import jax.numpy as jnp
 import numpy as np
 from jax import Array
 
-
 DENSITY_METRIC_NAMES = ('nll',)
 
 
@@ -115,8 +114,44 @@ def spread_per_step_batch(method_samples: Array) -> Array:
 COVERAGE_LEVELS = (0.5, 0.9)
 
 
-def sample_metrics_per_step(method_samples: Array, truth_states: Array) -> dict[str, np.ndarray]:
-    """Every reference-free sample metric as (N, T) numpy arrays, keyed by summary name."""
+@eqx.filter_jit
+def relabel_samples_to_truth(method_samples: Array, truth_states: Array, perms: Array) -> Array:
+    """Permute the exchangeable components of every sample to the labelling closest to
+    the truth.
+
+    `method_samples` is (N, T, S, k, d) and `truth_states` (N, T, k, d), with `perms` the
+    (P, k) index array of the labellings to try (all k! for pursuit-evasion). Under a
+    permutation-symmetric belief the labelled marginals of every method coincide, so the
+    per-coordinate metrics are computed on samples relabelled by the assignment that
+    minimizes the squared distance to the truth; the rule is the same for every method.
+    Runs as a scan over the permutations, so memory stays at a few copies of the samples.
+    """
+    x = truth_states[:, :, None]  # (N, T, 1, k, d)
+
+    def _dist(perm):
+        cand = method_samples[..., perm, :]
+        return jnp.sum((cand - x) ** 2, axis=(-1, -2))  # (N, T, S)
+
+    def _body(carry, i):
+        best_dist, best_idx = carry
+        d = _dist(perms[i])
+        better = d < best_dist
+        return (jnp.where(better, d, best_dist), jnp.where(better, i, best_idx)), None
+
+    init = (
+        jnp.full(method_samples.shape[:3], jnp.inf),
+        jnp.zeros(method_samples.shape[:3], jnp.int32),
+    )
+    (_, best_idx), _ = jax.lax.scan(_body, init, jnp.arange(perms.shape[0]))
+    best_perm = perms[best_idx]  # (N, T, S, k)
+    return jnp.take_along_axis(method_samples, best_perm[..., None], axis=3)
+
+
+def sample_metrics_per_step(
+    method_samples: Array, truth_states: Array, relabel_perms: Array | None = None
+) -> dict[str, np.ndarray]:
+    if relabel_perms is not None and relabel_perms.shape[0] > 1:
+        method_samples = relabel_samples_to_truth(method_samples, truth_states, relabel_perms)
     out = {
         'rmse': np.asarray(rmse_per_step_batch(method_samples, truth_states)),
         'crps': np.asarray(crps_per_step_batch(method_samples, truth_states)),

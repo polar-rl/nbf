@@ -10,7 +10,9 @@ Cells:
   sigma  a random-walk policy with the observation sigma pinned to each value of a
          sweep that runs past the training range (held-out likelihoods)
 Every method is scored on the true joint position: NLL for native densities (nbf,
-gmf), RMSE, CRPS, coverage and spread for all.
+enkf, gmf), RMSE, CRPS, coverage and spread for all. Observations are shuffled at k > 1,
+so the belief is symmetric under evader relabelling and the sample metrics are computed
+after relabelling every sample to the truth (`nbf.eval.metrics.relabel_samples_to_truth`).
 """
 
 import argparse
@@ -74,10 +76,12 @@ def subcell_labels(cell: str) -> list[tuple[str, str]]:
     return out
 
 
-DEFAULT_METHODS = 'nbf_512,nbf_1024,nbf_2048,pf_1024,pf_8192,pf_32768,pf_reg_8192,pf_reg_32768,gmf_4,gmf_16'
+DEFAULT_METHODS = (
+    'nbf_512,nbf_1024,nbf_2048,pf_8192,pf_32768,pf_reg_8192,pf_reg_32768,enkf_50,enkf_100'
+)
 
 # Methods with a native density, scored by the NLL of the true state.
-DENSITY_KINDS = ('nbf', 'gmf')
+DENSITY_KINDS = ('nbf', 'gmf', 'enkf')
 
 
 def make_policy(source: str, name: str, key):
@@ -88,11 +92,15 @@ def make_policy(source: str, name: str, key):
     raise ValueError(f'unknown policy source {source!r}')
 
 
-def run_subcell(args, k, sampling_model, density_model, cell, subcell, policy_src, sigma, methods, seed):
+def run_subcell(
+    args, k, sampling_model, density_model, cell, subcell, policy_src, sigma, methods, seed
+):
     key = jax.random.PRNGKey(seed)
     pol_key, rollout_key, noise_key, method_key = jax.random.split(key, 4)
     source, name = policy_src
-    policy = make_policy(source, name, jax.random.fold_in(pol_key, zlib.crc32(name.encode()) % (2**31)))
+    policy = make_policy(
+        source, name, jax.random.fold_in(pol_key, zlib.crc32(name.encode()) % (2**31))
+    )
     env = make_env_kn(k, args.episode_length, (policy,) * k)
     episodes = rollout_episodes(env, args.episode_length, args.num_episodes, rollout_key)
     if sigma is not None:
@@ -106,6 +114,7 @@ def run_subcell(args, k, sampling_model, density_model, cell, subcell, policy_sr
         env=env,
         episodes=episodes,
         truth=states_next_b.positions,
+        relabel_perms=env.perm_indices if k > 1 else None,
         sampling_model=sampling_model,
         density_model=density_model,
         density_kinds=DENSITY_KINDS,
@@ -134,8 +143,12 @@ def main() -> None:
     parser.add_argument('--num_ref_samples', type=int, default=NUM_REF_SAMPLES)
     parser.add_argument('--timing_repeats', type=int, default=0)
     parser.add_argument('--chunk_size', type=int, default=DEFAULT_CHUNK_SIZE)
-    parser.add_argument('--t_min', type=int, default=0, help='drop the first t_min steps from summaries')
-    parser.add_argument('--fm_num_steps', type=int, default=0, help='ODE steps for the sampling path only')
+    parser.add_argument(
+        '--t_min', type=int, default=0, help='drop the first t_min steps from summaries'
+    )
+    parser.add_argument(
+        '--fm_num_steps', type=int, default=0, help='ODE steps for the sampling path only'
+    )
     parser.add_argument('--bf16_sampling', action='store_true')
     parser.add_argument('--task_id', type=int, default=-1)
     parser.add_argument('--list_tasks', action='store_true')
@@ -151,7 +164,15 @@ def main() -> None:
         return
     methods = [m.strip() for m in args.methods.split(',') if m.strip()]
     if args.merge:
-        run_merge(args.output_dir, 'PE grid', CELLS, subcell_labels, methods, parse_seeds(args), args.t_min)
+        run_merge(
+            args.output_dir,
+            'PE grid',
+            CELLS,
+            subcell_labels,
+            methods,
+            parse_seeds(args),
+            args.t_min,
+        )
         return
     if args.task_id < 0 and args.cell is None:
         raise SystemExit('give a cell, or --task_id / --list_tasks / --merge')
@@ -189,8 +210,10 @@ def main() -> None:
 
     if args.task_id >= 0:
         cell, subcell, policy_src, sigma, seed = tasks[args.task_id]
-        print(f'Task {args.task_id}/{len(tasks) - 1}: {cell}/{subcell} k={k} seed {seed}, '
-              f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}')
+        print(
+            f'Task {args.task_id}/{len(tasks) - 1}: {cell}/{subcell} k={k} seed {seed}, '
+            f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
+        )
         per_method = run_subcell(
             args, k, sampling_model, density_model, cell, subcell, policy_src, sigma, methods, seed
         )
@@ -199,15 +222,34 @@ def main() -> None:
         print(f'Saved {path}\nRun --merge once every task finishes to build {cell}.npz')
         return
 
-    print(f'Cell {args.cell}: {len(CELLS[args.cell])} subcell(s) x {len(seeds)} seed(s), k={k}, '
-          f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}')
+    print(
+        f'Cell {args.cell}: {len(CELLS[args.cell])} subcell(s) x {len(seeds)} seed(s), k={k}, '
+        f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
+    )
     results = {}
     for subcell, policy_src, sigma in CELLS[args.cell]:
         for seed in seeds:
             results[(subcell, seed)] = run_subcell(
-                args, k, sampling_model, density_model, args.cell, subcell, policy_src, sigma, methods, seed
+                args,
+                k,
+                sampling_model,
+                density_model,
+                args.cell,
+                subcell,
+                policy_src,
+                sigma,
+                methods,
+                seed,
             )
-    merge_cell(args.output_dir, 'PE grid', args.cell, subcell_labels(args.cell), results, methods, args.t_min)
+    merge_cell(
+        args.output_dir,
+        'PE grid',
+        args.cell,
+        subcell_labels(args.cell),
+        results,
+        methods,
+        args.t_min,
+    )
 
 
 if __name__ == '__main__':

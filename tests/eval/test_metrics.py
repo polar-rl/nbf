@@ -1,4 +1,3 @@
-import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
@@ -158,3 +157,46 @@ class TestRunChunked:
         got = np.asarray(chunked_stream(stream, (tree,), (keys,), (2.0,), 8, 3))
         assert np.array_equal(got, full)
 
+
+class TestRelabelToTruth:
+    def _perms(self, k):
+        import itertools
+
+        return jnp.asarray(np.array(list(itertools.permutations(range(k))), dtype=np.int32))
+
+    def test_swapped_labels_recover_zero_rmse(self):
+        from nbf.eval.metrics import relabel_samples_to_truth
+
+        truth = jnp.asarray(np.random.default_rng(0).normal(size=(2, 3, 2, 2)))  # N,T,k,d
+        swapped = truth[:, :, None, ::-1, :]
+        swapped = jnp.broadcast_to(swapped, (2, 3, 4, 2, 2))
+        out = relabel_samples_to_truth(swapped, truth, self._perms(2))
+        assert out.shape == swapped.shape
+        assert np.allclose(np.asarray(out), np.asarray(truth[:, :, None]))
+        assert float(rmse_per_step_batch(out, truth).max()) < 1e-6
+        assert float(rmse_per_step_batch(swapped, truth).min()) > 0.1
+
+    def test_relabelling_never_hurts_and_keeps_multiset(self):
+        from nbf.eval.metrics import relabel_samples_to_truth
+
+        rng = np.random.default_rng(1)
+        X = jnp.asarray(rng.normal(size=(3, 4, 16, 3, 2)))
+        x = jnp.asarray(rng.normal(size=(3, 4, 3, 2)))
+        out = relabel_samples_to_truth(X, x, self._perms(3))
+        d_before = jnp.sum((X - x[:, :, None]) ** 2, axis=(-1, -2))
+        d_after = jnp.sum((out - x[:, :, None]) ** 2, axis=(-1, -2))
+        assert bool(jnp.all(d_after <= d_before + 1e-6))
+        # every relabelled sample is a permutation of the original sample
+        assert np.allclose(np.sort(np.asarray(out), axis=3), np.sort(np.asarray(X), axis=3))
+
+    def test_sample_metrics_accept_perms(self):
+        rng = np.random.default_rng(2)
+        X = jnp.asarray(rng.normal(size=(2, 3, 8, 2, 2)))
+        x = jnp.asarray(rng.normal(size=(2, 3, 2, 2)))
+        plain = sample_metrics_per_step(X, x)
+        matched = sample_metrics_per_step(X, x, relabel_perms=self._perms(2))
+        assert set(plain) == set(matched)
+        assert all(matched[name].shape == plain[name].shape for name in plain)
+        assert not np.allclose(matched['rmse'], plain['rmse'])
+        single = sample_metrics_per_step(X, x, relabel_perms=self._perms(1)[:, :1])
+        assert np.allclose(single['rmse'], plain['rmse'])
