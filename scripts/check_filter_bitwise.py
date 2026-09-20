@@ -1,4 +1,4 @@
-"""Print a fingerprint of one NBF reset+update per filter class on fixed keys.
+"""Print a fingerprint of one NBF reset+update on fixed keys.
 
 Run at two commits and diff the output: identical lines mean the filter's random
 stream and arithmetic are unchanged across a refactor.
@@ -16,7 +16,6 @@ from nbf.domains.lorenz96.env import build_lorenz96_env
 from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.proposals import BootstrapProposal, OptimalProposal
 
 SMOKE = os.path.join(
     os.path.dirname(__file__), '..', 'nbf', 'domains', 'lorenz96', 'configs', 'smoke_l96.yaml'
@@ -43,15 +42,14 @@ def main() -> None:
     st, op, on = (
         jax.tree.map(lambda x: x[0, 0], t) for t in (eps.states_next, eps.obs_prev, eps.obs_next)
     )
-    for proposal in (BootstrapProposal(), OptimalProposal()):
-        filt = NeuralBayesianFilter(model, 32, proposal=proposal)
-        emb = filt.reset(env, s0, o0, jax.random.PRNGKey(2))
-        emb1, neff, f1, f2 = filt.update(env, emb, st, op, 0, on, jax.random.PRNGKey(3))
-        pset, *_ = filt.step(env, emb, st, op, 0, on, jax.random.PRNGKey(4))
-        print(
-            f'{filt!r}: reset={fingerprint(emb)} update={fingerprint(emb1, neff)} '
-            f'step={fingerprint(pset.particles.x, pset.weights)}'
-        )
+    filt = NeuralBayesianFilter(model, 32)
+    emb = filt.reset(env, s0, o0, jax.random.PRNGKey(2))
+    emb1, neff, f1, f2 = filt.update(env, emb, st, op, 0, on, jax.random.PRNGKey(3))
+    pset, *_ = filt.step(env, emb, st, op, 0, on, jax.random.PRNGKey(4))
+    print(
+        f'{filt!r}: reset={fingerprint(emb)} update={fingerprint(emb1, neff)} '
+        f'step={fingerprint(pset.particles.x, pset.weights)}'
+    )
 
 
 if __name__ == '__main__':

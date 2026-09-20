@@ -28,7 +28,6 @@ training:
   checkpoint_interval: 5000
   clip_grad_norm: 1.0
   seed: 0
-  rollout_proposals: [bootstrap]
   rollout_num_particles: 2048
   episodes_per_rollout: 64
   grad_steps_per_rollout: 40

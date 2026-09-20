@@ -3,8 +3,7 @@
 No stored particle corpus and no reference filter. Episodes (true states and
 observations) are simulated on the fly, and the particle sets the encoder sees are
 produced along each episode by the NBF filter itself, rolled out with the current
-parameters; each rollout's episodes are split across the configured proposals. A set is
-the forecast particles together with their likelihood features (`nbf.filters.likelihood`)
+parameters. A set is the forecast particles together with their likelihood features (`nbf.filters.likelihood`)
 under uniform weights. The loss at every step is the generator objective (conditional
 flow matching for the FM generator, the exact NLL for a normalizing flow or
 autoregressive generator) evaluated at the single true state under the embedding of that
@@ -18,11 +17,10 @@ for the step being scored, never through the rollout. A domain supplies an env, 
 everything else lives here. See `nbf.domains.lorenz96.train` for the pattern.
 """
 
-
 import json
 import os
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from typing import NamedTuple
 
 import equinox as eqx
@@ -37,7 +35,6 @@ from jax import Array
 from nbf.config import TrainingConfig as _BaseTrainingConfig
 from nbf.eval.base import cast_velocity_net_bf16
 from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.proposals import PROPOSALS, make_proposal
 
 
 def _count_parameters(model):
@@ -48,7 +45,6 @@ def _count_parameters(model):
 @dataclass
 class OnPolicyTrainingConfig(_BaseTrainingConfig):
     # `batch_size` is the number of (particle set, true state) rows per gradient step.
-    rollout_proposals: list = field(default_factory=lambda: ['bootstrap'])
     rollout_num_particles: int = 2048  # n at deployment; the encoder trains on exactly this
     episodes_per_rollout: int = 64
     grad_steps_per_rollout: int = 20
@@ -59,22 +55,6 @@ class OnPolicyTrainingConfig(_BaseTrainingConfig):
     val_interval: int = 5000
     val_posterior_samples: int = 64  # generator samples per set for the validation RMSE
     resume_interval_s: float = 1200.0  # rewrite the resume checkpoint this often (wall clock)
-
-
-def normalize_proposals(cfg: OnPolicyTrainingConfig) -> None:
-    """Accept `a,b` from a --set override as well as a YAML list; validate the names."""
-    props = cfg.rollout_proposals
-    if isinstance(props, str):
-        props = [props]
-    # apply_overrides hands a `--set training.rollout_proposals=a,b` through as ['a,b'].
-    props = [q.strip() for p in props for q in str(p).split(',') if q.strip()]
-    unknown = [p for p in props if p not in PROPOSALS]
-    if not props or unknown:
-        raise ValueError(
-            f'training.rollout_proposals must be a non-empty subset of {sorted(PROPOSALS)}, '
-            f'got {cfg.rollout_proposals!r}'
-        )
-    cfg.rollout_proposals = props
 
 
 class Episodes(NamedTuple):
@@ -101,8 +81,8 @@ class Episodes(NamedTuple):
 # --------------------------------------------------------------------------------------
 
 
-def make_filter(model, proposal: str, num_particles: int) -> NeuralBayesianFilter:
-    return NeuralBayesianFilter(model, num_particles, proposal=make_proposal(proposal))
+def make_filter(model, num_particles: int) -> NeuralBayesianFilter:
+    return NeuralBayesianFilter(model, num_particles)
 
 
 _ROLLOUT_TEMPLATES: dict = {}
@@ -186,8 +166,8 @@ def rollout_particle_sets(
     )
 
 
-def rollout_sets(rollout_model, proposal, cfg, eps: Episodes, reset_keys, step_keys):
-    filt = make_filter(rollout_model, proposal, cfg.rollout_num_particles)
+def rollout_sets(rollout_model, cfg, eps: Episodes, reset_keys, step_keys):
+    filt = make_filter(rollout_model, cfg.rollout_num_particles)
     return rollout_particle_sets(
         eps.env,
         filt,
@@ -202,61 +182,15 @@ def rollout_sets(rollout_model, proposal, cfg, eps: Episodes, reset_keys, step_k
     )
 
 
-def _slice_episodes(eps: Episodes, start: int, stop: int) -> Episodes:
-    """Episodes [start, stop) of a batch; per-episode env leaves are sliced with them."""
-    take = lambda x: x[start:stop]  # noqa: E731
-    env = eps.env
-    if eps.env_axes is not None:
-        env = jax.tree_util.tree_map(
-            lambda x, ax: take(x) if ax == 0 else x,
-            eps.env,
-            eps.env_axes,
-            is_leaf=lambda x: x is None,
-        )
-    return Episodes(
-        *(
-            jax.tree.map(take, t)
-            for t in (eps.state0, eps.obs0, eps.states_next, eps.obs_prev, eps.obs_next)
-        ),
-        take(eps.x_norm),
-        env,
-        eps.env_axes,
-    )
-
-
-def collect_rollout(env, rollout_model, proposals, cfg, simulate_episodes, key: Array):
-    """Simulate a batch of episodes, roll the filter along them under each proposal, and
-    flatten to training rows.
-
-    The episodes are split evenly across `proposals` (one string is one proposal), so
-    every gradient step draws from every proposal's set distribution and there is no
-    rollout-to-rollout alternation. Each proposal gets its own episodes; the rollout
-    cost is the same as a single-proposal rollout of the same batch.
-    """
-    if isinstance(proposals, str):
-        proposals = [proposals]
+def collect_rollout(env, rollout_model, cfg, simulate_episodes, key: Array):
+    """Simulate a batch of episodes, roll the filter along them and flatten to training
+    rows."""
     ep_key, reset_key, step_key = jax.random.split(key, 3)
     B, T = cfg.episodes_per_rollout, env.time_limit
-    P = len(proposals)
-    if B % P:
-        raise ValueError(f'episodes_per_rollout {B} must be a multiple of {P} proposals')
     eps = simulate_episodes(env, B, ep_key)
     reset_keys = jax.random.split(reset_key, B)
     step_keys = jax.random.split(step_key, B * T).reshape(B, T, -1)
-    parts = []
-    for i, proposal in enumerate(proposals):
-        lo, hi = i * B // P, (i + 1) * B // P
-        parts.append(
-            rollout_sets(
-                rollout_model,
-                proposal,
-                cfg,
-                _slice_episodes(eps, lo, hi),
-                reset_keys[lo:hi],
-                step_keys[lo:hi],
-            )
-        )
-    feats, ws, neffs = (jnp.concatenate([p[j] for p in parts], axis=0) for j in range(3))
+    feats, ws, neffs = rollout_sets(rollout_model, cfg, eps, reset_keys, step_keys)
     rows = B * (T + 1)
     n, D_in = feats.shape[-2], feats.shape[-1]
     buffer = {
@@ -268,8 +202,6 @@ def collect_rollout(env, rollout_model, proposals, cfg, simulate_episodes, key: 
         'neff_over_n': float(jnp.mean(neffs)) / cfg.rollout_num_particles,
         'resample_frac': float(jnp.mean(neffs < 0.5 * cfg.rollout_num_particles)),
     }
-    for proposal, (_, _, ne) in zip(proposals, parts, strict=True):
-        stats[f'neff_over_n_{proposal}'] = float(jnp.mean(ne)) / cfg.rollout_num_particles
     return buffer, stats
 
 
@@ -413,7 +345,6 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
     `simulate_episodes(env, num_episodes, key)` returns an `Episodes` batch.
     """
     tcfg = cfg.training
-    normalize_proposals(tcfg)
     os.makedirs(cfg.save_path, exist_ok=True)
     key = jax.random.PRNGKey(cfg.seed)
     key, model_key, val_key, roll_key = jax.random.split(key, 4)
@@ -438,7 +369,6 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
     # Fixed validation episodes, rolled out fresh with the current model at each eval.
     val_eps = simulate_episodes(env, tcfg.val_episodes, val_key)
 
-    proposals = list(tcfg.rollout_proposals)
     log_path = os.path.join(cfg.save_path, 'train_log.jsonl')
     rollout_idx = step // tcfg.grad_steps_per_rollout
     t_start = time.time()
@@ -451,7 +381,7 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
         rmodel = rollout_model_from(model, cfg.model, tcfg.rollout_fm_steps, tcfg.rollout_bf16, rk)
 
         t0 = time.time()
-        buffer, rstats = collect_rollout(env, rmodel, proposals, tcfg, simulate_episodes, rk)
+        buffer, rstats = collect_rollout(env, rmodel, tcfg, simulate_episodes, rk)
         t_roll = time.time() - t0
         rows = buffer['x_true'].shape[0]
 
@@ -497,7 +427,7 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
             'rollout_jit_cache': _jit_cache_size(rollout_particle_sets),
             **rstats,
         }
-        if record['rollout_jit_cache'] > 4 * len(proposals) and not warned_retrace:
+        if record['rollout_jit_cache'] > 4 and not warned_retrace:
             print(
                 '[warn] rollout_particle_sets is being retraced every rollout; host memory will grow'
             )
@@ -506,7 +436,7 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
         if tcfg.val_interval > 0 and (
             step % tcfg.val_interval < tcfg.grad_steps_per_rollout or step >= tcfg.num_iterations
         ):
-            record['val'] = validate(model, rmodel, val_eps, proposals, tcfg, vk, rmse_scale)
+            record['val'] = validate(model, rmodel, val_eps, tcfg, vk, rmse_scale)
 
         with open(log_path, 'a') as f:
             f.write(json.dumps(record) + '\n')
@@ -518,47 +448,42 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
     print(f'Model saved to {os.path.join(cfg.save_path, "model.eqx")}')
 
 
-def validate(model, rollout_model, val_eps: Episodes, proposals, tcfg, key, rmse_scale=1.0):
+def validate(model, rollout_model, val_eps: Episodes, tcfg, key, rmse_scale=1.0):
     """Gold loss, posterior-mean RMSE (generator samples, the eval grid's quantity) and
-    forecast-mean RMSE on the fixed validation episodes, per proposal, in state units."""
+    forecast-mean RMSE on the fixed validation episodes, in state units."""
     x_all = val_eps.x_norm
     B, T = x_all.shape[0], x_all.shape[1] - 1
     x_norm = x_all.reshape(B * (T + 1), -1)
-    out = {}
-    for i, proposal in enumerate(proposals):
-        k = jax.random.fold_in(key, 1000 + i)
-        rk, sk, lk = jax.random.split(k, 3)
-        feats, ws, neffs = rollout_sets(
-            rollout_model,
-            proposal,
-            tcfg,
-            val_eps,
-            jax.random.split(rk, B),
-            jax.random.split(sk, B * T).reshape(B, T, -1),
-        )
-        n, D = feats.shape[-2], feats.shape[-1]
-        feats = feats.reshape(-1, n, D)
-        ws = ws.reshape(-1, n)
-        # Chunk the loss to bound memory; each chunk is a jitted call of fixed shape.
-        rows = feats.shape[0]
-        chunk = max(1, min(tcfg.batch_size // tcfg.micro_batches, rows))
-        losses, sq_errors = [], []
-        for s in range(0, rows - rows % chunk, chunk):
-            lk, ck, gk = jax.random.split(lk, 3)
-            sl = slice(s, s + chunk)
-            losses.append(float(eval_loss(model, feats[sl], ws[sl], x_norm[sl], ck)[0]))
-            sq_errors.append(
-                np.asarray(
-                    posterior_mean_sq_error(
-                        model, feats[sl], ws[sl], x_norm[sl], tcfg.val_posterior_samples, gk
-                    )
+    rk, sk, lk = jax.random.split(key, 3)
+    feats, ws, neffs = rollout_sets(
+        rollout_model,
+        tcfg,
+        val_eps,
+        jax.random.split(rk, B),
+        jax.random.split(sk, B * T).reshape(B, T, -1),
+    )
+    n, D = feats.shape[-2], feats.shape[-1]
+    feats = feats.reshape(-1, n, D)
+    ws = ws.reshape(-1, n)
+    # Chunk the loss to bound memory; each chunk is a jitted call of fixed shape.
+    rows = feats.shape[0]
+    chunk = max(1, min(tcfg.batch_size // tcfg.micro_batches, rows))
+    losses, sq_errors = [], []
+    for s in range(0, rows - rows % chunk, chunk):
+        lk, ck, gk = jax.random.split(lk, 3)
+        sl = slice(s, s + chunk)
+        losses.append(float(eval_loss(model, feats[sl], ws[sl], x_norm[sl], ck)[0]))
+        sq_errors.append(
+            np.asarray(
+                posterior_mean_sq_error(
+                    model, feats[sl], ws[sl], x_norm[sl], tcfg.val_posterior_samples, gk
                 )
             )
-        out[proposal] = {
-            'gold_loss': float(np.mean(losses)),
-            'post_rmse': float(np.sqrt(np.mean(np.concatenate(sq_errors)))) * float(rmse_scale),
-            'forecast_rmse': float(weighted_mean_rmse(feats, ws, x_norm, rmse_scale)),
-            'neff_over_n': float(jnp.mean(neffs)) / tcfg.rollout_num_particles,
-            'resample_frac': float(jnp.mean(neffs < 0.5 * tcfg.rollout_num_particles)),
-        }
-    return out
+        )
+    return {
+        'gold_loss': float(np.mean(losses)),
+        'post_rmse': float(np.sqrt(np.mean(np.concatenate(sq_errors)))) * float(rmse_scale),
+        'forecast_rmse': float(weighted_mean_rmse(feats, ws, x_norm, rmse_scale)),
+        'neff_over_n': float(jnp.mean(neffs)) / tcfg.rollout_num_particles,
+        'resample_frac': float(jnp.mean(neffs < 0.5 * tcfg.rollout_num_particles)),
+    }

@@ -1,7 +1,14 @@
 import numpy as np
 import pytest
 
-from nbf.eval.plots import load_cell, order_specs, plot_compute_matched, plot_per_step, plot_sweep, series_style
+from nbf.eval.plots import (
+    load_cell,
+    order_specs,
+    plot_compute_matched,
+    plot_per_step,
+    plot_sweep,
+    series_style,
+)
 
 
 def _fake_cell_npz(path, subcells, specs, N=3, T=4, seeds=(0, 1)):
@@ -19,10 +26,14 @@ def _fake_cell_npz(path, subcells, specs, N=3, T=4, seeds=(0, 1)):
 
 
 def test_series_style_and_order():
-    assert series_style('nbf_op_2048')[0] == 'NBF-OP(2048)'
+    assert series_style('nbf_2048')[0] == 'NBF(2048)'
     assert series_style('pf_reg_8192')[0] == 'PF-reg(8192)'
-    assert order_specs(['pf_8192', 'nbf_256', 'enkf_50', 'nbf_op_1024', 'nbf_1024']) == [
-        'nbf_op_1024', 'nbf_256', 'nbf_1024', 'pf_8192', 'enkf_50'
+    assert order_specs(['pf_8192', 'nbf_256', 'enkf_50', 'pf_op_1024', 'nbf_1024']) == [
+        'nbf_256',
+        'nbf_1024',
+        'pf_op_1024',
+        'pf_8192',
+        'enkf_50',
     ]
 
 

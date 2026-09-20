@@ -1,8 +1,7 @@
 """On-policy training of the Lorenz-96 NBF embedding (see nbf.train for the loop).
 
-Episodes are simulated on the fly; the filter is rolled out under each configured
-proposal (bootstrap and the locally optimal proposal by default; each rollout's
-episodes are split across them so one checkpoint serves both eval rows).
+Episodes are simulated on the fly and the filter is rolled out along them with the
+current parameters.
 """
 
 import argparse
@@ -21,14 +20,13 @@ from nbf.domains.lorenz96.config import DataConfig
 from nbf.domains.lorenz96.env import Lorenz96Env, build_lorenz96_env
 from nbf.eval.base import env_rollout_batch
 from nbf.filters.likelihood import likelihood_feature_dim
-from nbf.train import Episodes, OnPolicyTrainingConfig, normalize_proposals
+from nbf.train import Episodes, OnPolicyTrainingConfig
 from nbf.train import run as _run
 
 
 @dataclass
 class TrainingConfig(OnPolicyTrainingConfig):
     batch_size: int = 256
-    rollout_proposals: list = field(default_factory=lambda: ['bootstrap', 'optimal'])
     norm_episodes: int = 512  # episodes used to estimate the climatological norm stats
 
 
@@ -56,7 +54,6 @@ def load_config(path: str | None, overrides: list[str]) -> Config:
         cfg = build_dataclass(Config, raw)
     if overrides:
         cfg = apply_overrides(cfg, overrides)
-    normalize_proposals(cfg.training)
     if not os.path.isabs(cfg.save_path):
         cfg.save_path = os.path.normpath(os.path.join(_src_root(), cfg.save_path))
     return cfg

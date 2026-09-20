@@ -26,14 +26,13 @@ from nbf.domains.pursuit_evasion.env import (
 )
 from nbf.domains.pursuit_evasion.policies import sample_in_dist_tuple
 from nbf.filters.likelihood import likelihood_feature_dim
-from nbf.train import Episodes, OnPolicyTrainingConfig, normalize_proposals
+from nbf.train import Episodes, OnPolicyTrainingConfig
 from nbf.train import run as _run
 
 
 @dataclass
 class TrainingConfig(OnPolicyTrainingConfig):
     batch_size: int = 256
-    rollout_proposals: list = field(default_factory=lambda: ['bootstrap'])
 
 
 @dataclass
@@ -60,7 +59,6 @@ def load_config(path: str | None, overrides: list[str]) -> Config:
         cfg = build_dataclass(Config, raw)
     if overrides:
         cfg = apply_overrides(cfg, overrides)
-    normalize_proposals(cfg.training)
     if not os.path.isabs(cfg.save_path):
         cfg.save_path = os.path.normpath(os.path.join(_src_root(), cfg.save_path))
     return cfg
@@ -111,7 +109,9 @@ def _rollout_one(env: PursuitEvasionEnv, key: Array):
 
     _, (states_tail, obs_tail) = jax.lax.scan(_step, state0, step_keys)
     prepend = lambda head, tail: jnp.concatenate([jnp.asarray(head)[None], tail], axis=0)  # noqa: E731
-    return jax.tree.map(prepend, state0, states_tail), jax.tree.map(prepend, init_ts.observation, obs_tail)
+    return jax.tree.map(prepend, state0, states_tail), jax.tree.map(
+        prepend, init_ts.observation, obs_tail
+    )
 
 
 def simulate_episodes(env: PursuitEvasionEnv, num_episodes: int, key: Array) -> Episodes:

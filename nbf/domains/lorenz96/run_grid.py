@@ -2,6 +2,7 @@ import argparse
 import dataclasses
 import json
 import os
+
 import jax
 
 from nbf.config import build_dataclass
@@ -70,7 +71,7 @@ DEFAULT_METHODS = (
 
 # Methods with a native density, scored by the NLL of the true state. Particle
 # filters have none and get sample metrics only.
-DENSITY_KINDS = ('nbf', 'nbf_op', 'enkf', 'letkf')
+DENSITY_KINDS = ('nbf', 'enkf', 'letkf')
 
 
 def make_cell_env(data_cfg, f_bands, sigma_obs, episode_length: int) -> Lorenz96Env:
@@ -123,7 +124,9 @@ def run_subcell(
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description='L96 evaluation grid (l1: in-distribution F, l2: held-out F, sigma: held-out likelihoods).')
+    parser = argparse.ArgumentParser(
+        description='L96 evaluation grid (l1: in-distribution F, l2: held-out F, sigma: held-out likelihoods).'
+    )
     parser.add_argument('cell', nargs='?', choices=sorted(CELLS))
     parser.add_argument('--model_dir', type=str, default=None)
     parser.add_argument('--output_dir', type=str, required=True)
@@ -286,7 +289,13 @@ def main() -> None:
             )
 
     merge_cell(
-        args.output_dir, 'L96 grid', args.cell, subcell_labels(args.cell), results, methods, args.t_min
+        args.output_dir,
+        'L96 grid',
+        args.cell,
+        subcell_labels(args.cell),
+        results,
+        methods,
+        args.t_min,
     )
 
 

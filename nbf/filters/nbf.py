@@ -7,27 +7,25 @@ from jumanji.env import Environment
 from nbf.base_types import Observation, State
 from nbf.filters.likelihood import likelihood_features
 from nbf.filters.particle import ParticleSet
-from nbf.filters.proposals import BootstrapProposal, Proposal
 
 
 class NeuralBayesianFilter(eqx.Module):
-    """Generate, propose, featurize, re-embed.
+    """Generate, propagate, featurize, re-embed.
 
     The belief is the embedding of a uniformly weighted set whose elements are
     (state features, likelihood features): the forecast particles together with a
     sufficient statistic of every observation-likelihood factor at each particle
     (`nbf.filters.likelihood`). No importance weight is formed and nothing is resampled;
-    the analysis step is what the encoder and generator learn. The proposal (bootstrap by
-    default) is the only step that sees the domain's dynamics; see `nbf.filters.proposals`.
-    The scalar weights on the returned particle sets are kept as a diagnostic (ESS).
+    the analysis step is what the encoder and generator learn. The bootstrap move
+    (`ParticleSet.simulate`) is the only step that sees the domain's dynamics. The scalar
+    weights on the returned particle sets are kept as a diagnostic (ESS).
     """
 
     model: FlowEmbedding
     num_particles: int
-    proposal: Proposal = eqx.field(default_factory=BootstrapProposal)
 
     def __repr__(self) -> str:
-        return f'NBF{self.proposal.tag} ({self.num_particles})'
+        return f'NBF ({self.num_particles})'
 
     @eqx.filter_jit
     def sample(self, embedding: jax.Array, state: State, num_samples: int, key: jax.Array) -> State:
@@ -65,22 +63,22 @@ class NeuralBayesianFilter(eqx.Module):
     ) -> tuple[ParticleSet, jax.Array, jax.Array]:
         # `observation` (the current one) is already accounted for by the belief the
         # particles are generated from; it stays in the signature for callers. Returns the
-        # proposed set with its likelihood features, a constant False (no sampling pass),
-        # and the proposal's uniform-fallback flag.
+        # propagated set with its likelihood features, a constant False (no sampling
+        # pass), and the simulate step's uniform-weight fallback flag.
         del observation
-        sample_key, propose_key = jax.random.split(key, 2)
+        sample_key, sim_key = jax.random.split(key, 2)
 
         particles = self.sample(embedding, state, self.num_particles - 1, sample_key)
         particles = jax.tree.map(
             lambda x, y: jnp.concatenate([x, y[jnp.newaxis]], axis=0), particles, state
         )
         uniform = jnp.full(self.num_particles, 1.0 / self.num_particles)
-        particle_set, proposal_fallback = self.proposal.propose(
-            env, particles, uniform, action, next_observation, propose_key
+        particle_set, weight_fallback = ParticleSet(particles, uniform).simulate(
+            env, action, next_observation, sim_key
         )
         features = likelihood_features(env, particle_set.particles, next_observation)
         particle_set = ParticleSet(particle_set.particles, particle_set.weights, features)
-        return particle_set, jnp.array(False), proposal_fallback
+        return particle_set, jnp.array(False), weight_fallback
 
     @eqx.filter_jit
     def update_particles(

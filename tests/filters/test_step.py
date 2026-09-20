@@ -1,5 +1,4 @@
-"""The proposal interface: the bootstrap step is generate + ParticleSet.simulate + likelihood
-features, the optimal proposal is the same filter with a different proposal, and the filter's
+"""The NBF step is generate + ParticleSet.simulate + likelihood features, and the filter's
 public call surface (positional constructor, update/step/sample) holds."""
 
 import os
@@ -14,15 +13,15 @@ from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.likelihood import likelihood_feature_dim, likelihood_features
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.particle import ParticleSet
-from nbf.filters.proposals import (
-    BootstrapProposal,
-    OptimalProposal,
-    make_proposal,
-    optimal_proposal_particle_set,
-)
 
 SMOKE = os.path.join(
-    os.path.dirname(__file__), '..', '..', 'nbf', 'domains', 'lorenz96', 'configs',
+    os.path.dirname(__file__),
+    '..',
+    '..',
+    'nbf',
+    'domains',
+    'lorenz96',
+    'configs',
     'smoke_l96.yaml',
 )
 
@@ -86,29 +85,9 @@ def test_bootstrap_step_is_generate_simulate_featurize(setup):
     assert not bool(got_sampling) and bool(got_simulation == simulation_fallback)
 
 
-def test_repr_names_the_proposal(setup):
+def test_repr(setup):
     _, model, *_ = setup
     assert repr(NeuralBayesianFilter(model, 32)) == 'NBF (32)'
-    assert repr(NeuralBayesianFilter(model, 32, proposal=OptimalProposal())) == 'NBF-OP (32)'
-
-
-def test_optimal_step_uses_optimal_proposal_particle_set(setup):
-    env, model, s0, o0, st, op, on = setup
-    filt = NeuralBayesianFilter(model, 32, proposal=OptimalProposal())
-    emb = filt.reset(env, s0, o0, jax.random.PRNGKey(6))
-    key = jax.random.PRNGKey(7)
-    sample_key, propose_key = jax.random.split(key, 2)
-    particles = filt.sample(emb, st, 31, sample_key)
-    particles = jax.tree.map(
-        lambda x, y: jnp.concatenate([x, y[jnp.newaxis]], axis=0), particles, st
-    )
-    expected = optimal_proposal_particle_set(
-        env, particles, jnp.full(32, 1 / 32), on, propose_key
-    )
-    got, _, fallback = filt.step(env, emb, st, op, 0, on, key)
-    assert _tree_close(got.particles, expected.particles)
-    assert _tree_close(got.weights, expected.weights)
-    assert not bool(fallback)
 
 
 def test_public_call_surface(setup):
@@ -117,7 +96,6 @@ def test_public_call_surface(setup):
     # the encoder input is state features next to likelihood features under uniform weights.
     env, model, s0, o0, st, op, on = setup
     filt = NeuralBayesianFilter(model, 32)
-    assert isinstance(filt.proposal, BootstrapProposal)
     emb = filt.reset(env, s0, o0, jax.random.PRNGKey(8))
     out = filt.update(env, emb, st, op, 0, on, jax.random.PRNGKey(9))
     assert len(out) == 4 and out[0].shape == emb.shape
@@ -127,20 +105,3 @@ def test_public_call_surface(setup):
     assert feats.shape == (32, 2 * env.K)
     assert jnp.allclose(ws, 1 / 32)
     assert filt.sample(emb, st, 5, jax.random.PRNGKey(12)).x.shape == (5, env.K)
-
-
-def test_make_proposal():
-    assert isinstance(make_proposal('bootstrap'), BootstrapProposal)
-    assert isinstance(make_proposal('optimal'), OptimalProposal)
-    with pytest.raises(ValueError):
-        make_proposal('nope')
-
-
-def test_optimal_proposal_needs_env_hooks(setup):
-    env, model, s0, o0, st, op, on = setup
-
-    class NoHooks:
-        pass
-
-    with pytest.raises(ValueError):
-        OptimalProposal().propose(NoHooks(), None, None, 0, on, jax.random.PRNGKey(0))

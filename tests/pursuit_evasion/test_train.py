@@ -19,7 +19,13 @@ from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.train import collect_rollout, gold_loss, train_step
 
 SMOKE = os.path.join(
-    os.path.dirname(__file__), '..', '..', 'nbf', 'domains', 'pursuit_evasion', 'configs',
+    os.path.dirname(__file__),
+    '..',
+    '..',
+    'nbf',
+    'domains',
+    'pursuit_evasion',
+    'configs',
     'smoke_k1.yaml',
 )
 
@@ -80,8 +86,13 @@ def test_simulate_episodes_layout(fixture, request):
 def test_collect_rollout_shapes(fixture, request):
     cfg, env, model = request.getfixturevalue(fixture)
     tcfg = cfg.training
-    B, T, n, D = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, 2 * env.num_evaders
-    buffer, stats = collect_rollout(env, model, 'bootstrap', tcfg, simulate_episodes, jax.random.PRNGKey(4))
+    B, T, n, D = (
+        tcfg.episodes_per_rollout,
+        env.time_limit,
+        tcfg.rollout_num_particles,
+        2 * env.num_evaders,
+    )
+    buffer, stats = collect_rollout(env, model, tcfg, simulate_episodes, jax.random.PRNGKey(4))
     assert buffer['features'].shape == (B * (T + 1), n, D + env.num_evaders)
     assert buffer['weights'].shape == (B * (T + 1), n)
     assert buffer['x_true'].shape == (B * (T + 1), D)
@@ -105,7 +116,7 @@ def test_slice_episodes_slices_batched_policies(setup_k2):
 def test_train_step_reduces_loss_on_fixed_batch(setup_k1):
     cfg, env, model = setup_k1
     tcfg = cfg.training
-    buffer, _ = collect_rollout(env, model, 'bootstrap', tcfg, simulate_episodes, jax.random.PRNGKey(5))
+    buffer, _ = collect_rollout(env, model, tcfg, simulate_episodes, jax.random.PRNGKey(5))
     idx = jnp.arange(min(16, buffer['x_true'].shape[0]))
     f, w, x = buffer['features'][idx], buffer['weights'][idx], buffer['x_true'][idx]
     key = jax.random.PRNGKey(6)

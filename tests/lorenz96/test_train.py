@@ -12,7 +12,6 @@ from nbf.domains.lorenz96.env import build_lorenz96_env
 from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.likelihood import likelihood_feature_dim
 from nbf.filters.nbf import NeuralBayesianFilter
-from nbf.filters.proposals import BootstrapProposal, OptimalProposal
 from nbf.train import (
     collect_rollout,
     gold_loss,
@@ -48,20 +47,9 @@ def setup():
     return cfg, env, model
 
 
-def test_config_rejects_unknown_proposal():
-    with pytest.raises(ValueError):
-        load_config(SMOKE, ['training.rollout_proposals=bogus'])
-
-
-def test_config_accepts_comma_separated_proposals():
-    cfg = load_config(SMOKE, ['training.rollout_proposals=optimal,bootstrap'])
-    assert cfg.training.rollout_proposals == ['optimal', 'bootstrap']
-
-
-@pytest.mark.parametrize('proposal', [BootstrapProposal(), OptimalProposal()])
-def test_update_is_update_particles_then_embed(setup, proposal):
+def test_update_is_update_particles_then_embed(setup):
     _, env, model = setup
-    filt = NeuralBayesianFilter(model, 32, proposal=proposal)
+    filt = NeuralBayesianFilter(model, 32)
     eps = simulate_episodes(env, 1, jax.random.PRNGKey(1))
     one = lambda t: jax.tree.map(lambda x: x[0], t)  # noqa: E731
     s0, o0 = one(eps.state0), one(eps.obs0)
@@ -85,42 +73,27 @@ def test_rollout_shapes_and_normalization(setup):
     cfg, env, model = setup
     tcfg = cfg.training
     B, T, n, K = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, env.K
-    for proposal in ('bootstrap', 'optimal'):
-        buffer, stats = collect_rollout(
-            env, model, proposal, tcfg, simulate_episodes, jax.random.PRNGKey(3)
-        )
-        assert buffer['features'].shape == (B * (T + 1), n, 2 * K)
-        assert buffer['weights'].shape == (B * (T + 1), n)
-        assert buffer['x_true'].shape == (B * (T + 1), K)
-        assert bool(jnp.all(jnp.isfinite(buffer['features'])))
-        assert jnp.allclose(buffer['weights'], 1.0 / n, atol=1e-6)
-        assert 0.0 <= stats['neff_over_n'] <= 1.0
-        assert 0.0 <= stats['resample_frac'] <= 1.0
-
-
-def test_collect_rollout_splits_episodes_across_proposals(setup):
-    cfg, env, model = setup
-    tcfg = cfg.training
-    B, T, n, K = tcfg.episodes_per_rollout, env.time_limit, tcfg.rollout_num_particles, env.K
-    buffer, stats = collect_rollout(
-        env, model, ['bootstrap', 'optimal'], tcfg, simulate_episodes, jax.random.PRNGKey(21)
-    )
+    buffer, stats = collect_rollout(env, model, tcfg, simulate_episodes, jax.random.PRNGKey(3))
     assert buffer['features'].shape == (B * (T + 1), n, 2 * K)
-    assert {'neff_over_n_bootstrap', 'neff_over_n_optimal'} <= set(stats)
-    # The optimal proposal keeps a higher ESS than the bootstrap on the same episodes.
-    assert stats['neff_over_n_optimal'] >= stats['neff_over_n_bootstrap']
-    with pytest.raises(ValueError):
-        tcfg_odd = load_config(SMOKE, ['training.episodes_per_rollout=3']).training
-        collect_rollout(env, model, ['bootstrap', 'optimal'], tcfg_odd, simulate_episodes, jax.random.PRNGKey(0))
+    assert buffer['weights'].shape == (B * (T + 1), n)
+    assert buffer['x_true'].shape == (B * (T + 1), K)
+    assert bool(jnp.all(jnp.isfinite(buffer['features'])))
+    assert jnp.allclose(buffer['weights'], 1.0 / n, atol=1e-6)
+    assert 0.0 <= stats['neff_over_n'] <= 1.0
+    assert 0.0 <= stats['resample_frac'] <= 1.0
 
 
 def test_rollout_row_zero_is_the_prior_set(setup):
     cfg, env, model = setup
     n = cfg.training.rollout_num_particles
-    filt = make_filter(model, 'bootstrap', n)
+    filt = make_filter(model, n)
     eps = simulate_episodes(env, 2, jax.random.PRNGKey(4))
     state0, obs0, states_next, obs_prev, obs_next = (
-        eps.state0, eps.obs0, eps.states_next, eps.obs_prev, eps.obs_next
+        eps.state0,
+        eps.obs0,
+        eps.states_next,
+        eps.obs_prev,
+        eps.obs_next,
     )
     rkeys = jax.random.split(jax.random.PRNGKey(5), 2)
     skeys = jax.random.split(jax.random.PRNGKey(6), 2 * env.time_limit).reshape(
@@ -159,7 +132,7 @@ def test_train_step_micro_batches(setup):
     the exact numbers."""
     cfg, env, model = setup
     tcfg = cfg.training
-    buffer, _ = collect_rollout(env, model, 'bootstrap', tcfg, simulate_episodes, jax.random.PRNGKey(30))
+    buffer, _ = collect_rollout(env, model, tcfg, simulate_episodes, jax.random.PRNGKey(30))
     idx = jnp.arange(16)
     f, w, x = buffer['features'][idx], buffer['weights'][idx], buffer['x_true'][idx]
     key = jax.random.PRNGKey(31)
@@ -181,7 +154,7 @@ def test_train_step_micro_batches(setup):
 def test_train_step_reduces_gold_loss_on_fixed_batch(setup):
     cfg, env, model = setup
     tcfg = cfg.training
-    buffer, _ = collect_rollout(env, model, 'optimal', tcfg, simulate_episodes, jax.random.PRNGKey(9))
+    buffer, _ = collect_rollout(env, model, tcfg, simulate_episodes, jax.random.PRNGKey(9))
     idx = jnp.arange(min(16, buffer['x_true'].shape[0]))
     f, w, x = buffer['features'][idx], buffer['weights'][idx], buffer['x_true'][idx]
     key = jax.random.PRNGKey(10)
@@ -201,8 +174,7 @@ def test_validate_reports_posterior_and_forecast_rmse(setup):
     tcfg.val_posterior_samples = 8
     val_eps = simulate_episodes(env, 2, jax.random.PRNGKey(30))
     rmodel = rollout_model_from(model, cfg.model, 3, False, jax.random.PRNGKey(31))
-    out = validate(model, rmodel, val_eps, ['bootstrap'], tcfg, jax.random.PRNGKey(32), 3.9)
-    v = out['bootstrap']
+    v = validate(model, rmodel, val_eps, tcfg, jax.random.PRNGKey(32), 3.9)
     assert {'gold_loss', 'post_rmse', 'forecast_rmse', 'neff_over_n', 'resample_frac'} <= set(v)
     assert all(np.isfinite(x) for x in v.values())
     assert v['post_rmse'] > 0.0 and v['forecast_rmse'] > 0.0

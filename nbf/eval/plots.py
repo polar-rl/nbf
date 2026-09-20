@@ -28,7 +28,6 @@ METRIC_LABELS = {
 
 # family -> (label, colormap); intensity grows with the budget so a family reads as one hue
 FAMILIES = {
-    'nbf_op': ('NBF-OP', plt.get_cmap('Purples')),
     'nbf': ('NBF', plt.get_cmap('Blues')),
     'pf_reg': ('PF-reg', plt.get_cmap('Reds')),
     'pf_rm': ('PF-RM', plt.get_cmap('YlOrBr')),
@@ -95,7 +94,9 @@ def plot_per_step(cell, subcell, metrics, out_path, t_min=0):
             t = np.arange(1, mean.shape[0] + 1)
             label, color = series_style(spec)
             ax.plot(t[t_min:], mean[t_min:], color=color, label=label, lw=1.4)
-            ax.fill_between(t[t_min:], (mean - sem)[t_min:], (mean + sem)[t_min:], color=color, alpha=0.15, lw=0)
+            ax.fill_between(
+                t[t_min:], (mean - sem)[t_min:], (mean + sem)[t_min:], color=color, alpha=0.15, lw=0
+            )
         ax.set_xlabel('step t')
         ax.set_ylabel(METRIC_LABELS.get(metric, metric))
         ax.grid(True, alpha=0.3)
@@ -128,7 +129,9 @@ def plot_compute_matched(cell, subcell, metric, out_path, t_min=0, num_episodes=
         pts.sort()
         xs, ys, es = zip(*[(p[0], p[1], p[2]) for p in pts], strict=True)
         label, cmap = FAMILIES.get(family, (family, plt.get_cmap('Greys')))
-        ax.errorbar(xs, ys, yerr=es, color=cmap(0.8), marker='o', ms=4, lw=1.2, capsize=2, label=label)
+        ax.errorbar(
+            xs, ys, yerr=es, color=cmap(0.8), marker='o', ms=4, lw=1.2, capsize=2, label=label
+        )
     ax.set_xscale('log')
     ax.set_xlabel('ms per filter step')
     ax.set_ylabel(METRIC_LABELS.get(metric, metric))
@@ -171,7 +174,9 @@ def plot_sweep(cell, metric, out_path, t_min=0, xlabel=None):
                 ys.append(m)
                 es.append(s)
             label, color = series_style(spec)
-            ax.errorbar(xs, ys, yerr=es, color=color, marker='o', ms=3.5, lw=1.2, capsize=2, label=label)
+            ax.errorbar(
+                xs, ys, yerr=es, color=color, marker='o', ms=3.5, lw=1.2, capsize=2, label=label
+            )
         if xs.max() / max(xs.min(), 1e-9) > 20:
             ax.set_xscale('log')
         ax.set_xlabel(xlabel or 'subcell value')
@@ -186,7 +191,15 @@ def plot_sweep(cell, metric, out_path, t_min=0, xlabel=None):
                 ys.append(m)
                 es.append(s)
             label, color = series_style(spec)
-            ax.bar(x0 + (j - len(specs) / 2 + 0.5) * width, ys, width, yerr=es, color=color, label=label, capsize=2)
+            ax.bar(
+                x0 + (j - len(specs) / 2 + 0.5) * width,
+                ys,
+                width,
+                yerr=es,
+                color=color,
+                label=label,
+                capsize=2,
+            )
         ax.set_xticks(x0)
         ax.set_xticklabels(subcells, rotation=30, ha='right', fontsize=8)
     ax.set_ylabel(METRIC_LABELS.get(metric, metric))
@@ -206,7 +219,9 @@ def main() -> None:
     parser.add_argument('--metric', default='crps')
     parser.add_argument('--metrics', default='nll,rmse,crps', help='per_step: comma list')
     parser.add_argument('--t_min', type=int, default=0)
-    parser.add_argument('--num_episodes', type=int, default=None, help='compute: episodes per shard run')
+    parser.add_argument(
+        '--num_episodes', type=int, default=None, help='compute: episodes per shard run'
+    )
     parser.add_argument('--xlabel', default=None)
     args = parser.parse_args()
     cell = load_cell(args.npz)
