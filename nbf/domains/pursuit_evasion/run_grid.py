@@ -52,7 +52,7 @@ from nbf.eval.grid import (
     write_shard,
 )
 
-SIGMAS = (0.01, 0.05, 0.1, 0.2, 0.5, 0.75, 1.0)  # training range is [0.1, 0.5]
+SIGMAS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)  # 0.01-0.05 is the precise-range regime
 DEFAULT_CHUNK_SIZE = 4
 
 
@@ -77,7 +77,8 @@ def subcell_labels(cell: str) -> list[tuple[str, str]]:
 
 
 DEFAULT_METHODS = (
-    'nbf_512,nbf_1024,nbf_2048,pf_8192,pf_32768,pf_reg_8192,pf_reg_32768,enkf_50,enkf_100'
+    'nbf_512,nbf_1024,nbf_2048,pf_8192,pf_32768,pf_reg_8192,pf_reg_32768,'
+    'enkf_50,enkf_100,gmf_16,gmf_64'
 )
 
 # Methods with a native density, scored by the NLL of the true state.

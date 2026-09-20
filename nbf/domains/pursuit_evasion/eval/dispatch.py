@@ -35,7 +35,7 @@ def _gmf_sampler(
     desc=None,
     **_,
 ):
-    gmf = make_pe_gmf(num_evaders=env.num_evaders, M=n)
+    gmf = make_pe_gmf(M=n, env=env)
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
     ik, samp_k = jax.random.split(key)
@@ -62,7 +62,7 @@ def _gmf_density_sampler(
     key,
     **_,
 ):
-    gmf = make_pe_gmf(num_evaders=env.num_evaders, M=n)
+    gmf = make_pe_gmf(M=n, env=env)
     N = batch_size(state0_b)
     T = time_len(obs_prev_b)
     ik, samp_k = jax.random.split(key)

@@ -64,7 +64,8 @@ def gmf_reference_sample_stream_batch(
         def _step(carry, xs):
             w, mu, sg = carry
             samp_k, _state_t, next_obs_t = xs
-            w, mu, sg = gmf.step(w, mu, sg, policy_tuple, obstacles, next_obs_t)
+            step_k, samp_k = jax.random.split(samp_k)
+            w, mu, sg = gmf.step(w, mu, sg, policy_tuple, obstacles, next_obs_t, step_k)
             samps = _gmf_sample_mixture(w, mu, sg, num_ref_samples, k, samp_k)
             return (w, mu, sg), samps
 
@@ -97,7 +98,8 @@ def gmf_samples_density_stream_batch(
         def _step(carry, xs):
             w, mu, sg = carry
             samp_k, state_t, next_obs_t = xs
-            w, mu, sg = gmf.step(w, mu, sg, env.policy, env.obstacles, next_obs_t)
+            step_k, samp_k = jax.random.split(samp_k)
+            w, mu, sg = gmf.step(w, mu, sg, env.policy, env.obstacles, next_obs_t, step_k)
             samps = _gmf_sample_mixture(w, mu, sg, num_ref_samples, k, samp_k)
             lp_true = _gmf_logp_step(w, mu, sg, state_t.positions)
             return (w, mu, sg), (samps, lp_true)

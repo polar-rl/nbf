@@ -99,6 +99,16 @@ def transition_single(position, policy, obstacles, key):
     )
 
 
+def propagate_with_key(position, policy, obstacles, key):
+    heading = policy(position, key)
+    direction = jnp.array([jnp.cos(heading), jnp.sin(heading)])
+    displacement = SPEED * direction
+    step = displacement / _NUM_SUBSTEPS
+    return jax.lax.fori_loop(
+        0, _NUM_SUBSTEPS, lambda _, p: clip_to_valid(p + step, obstacles), position
+    )
+
+
 def propagate_deterministic(position, policy, obstacles):
     heading = policy(position, jax.random.PRNGKey(0))
     direction = jnp.array([jnp.cos(heading), jnp.sin(heading)])

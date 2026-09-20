@@ -1,27 +1,10 @@
-"""Unscented Kalman Filter.
-
-Domain-agnostic: process noise, observation noise, sensor position, and the
-deterministic dynamics propagator are all constructor inputs. Callers (e.g. PE)
-supply their own; see ``nbf.domains.pursuit_evasion.eval.base.make_pe_gmf`` for
-how the pursuit-evasion benchmark assembles its values.
-
-The observation model is range-only: ``z = ||pos - sensor_pos||`` per evader,
-with isotropic Gaussian noise. State is the flat ``2k``-vector of evader xy
-positions (k = ``num_evaders``).
-
-Precision follows the JAX session: by default float32, or float64 if the caller
-enables ``jax_enable_x64`` in their entrypoint. The small ``_ALPHA`` here leads
-to catastrophic cancellation in the sigma-point weights at float32, so enabling
-x64 is recommended for production use.
-"""
-
 from collections.abc import Callable
 
 import equinox as eqx
 import jax
 import jax.numpy as jnp
 
-_ALPHA = 1e-3
+_ALPHA = 1.0
 _BETA = 2.0
 _KAPPA = 0.0
 
@@ -55,6 +38,9 @@ class UKF(eqx.Module):
     R: jax.Array
     sensor_pos: jax.Array
     propagate_fn: Callable = eqx.field(static=True)
+    obs_model: object  # None, or a pytree with predicted / vector / noise_std
+    observation_sigma_scale: float = eqx.field(static=True)
+    heading_draws: int = eqx.field(static=True)
 
     def __init__(
         self,
@@ -64,6 +50,8 @@ class UKF(eqx.Module):
         sensor_pos: jax.Array,
         propagate_fn: Callable,
         observation_sigma_scale: float = 1.0,
+        obs_model=None,
+        heading_draws: int = 0,
     ):
         self.n = 2 * num_evaders
         self.k = num_evaders
@@ -73,8 +61,15 @@ class UKF(eqx.Module):
         self.R = scaled**2 * jnp.eye(self.k)
         self.sensor_pos = jnp.asarray(sensor_pos)
         self.propagate_fn = propagate_fn
+        self.obs_model = obs_model
+        self.observation_sigma_scale = float(observation_sigma_scale)
+        self.heading_draws = int(heading_draws)
+        if self.heading_draws > 0 and not callable(propagate_fn):
+            raise ValueError(
+                'heading_draws > 0 needs a keyed propagate_fn(pos, policy, obstacles, key)'
+            )
 
-    def predict(self, mu, sigma, policy, obstacles):
+    def predict(self, mu, sigma, policy, obstacles, key=None):
         sigmas = _sigma_points(mu, sigma, self.lam)
         k = self.k
 
@@ -83,42 +78,70 @@ class UKF(eqx.Module):
         policy_tuple = policy if isinstance(policy, tuple) else (policy,) * k
         propagate = self.propagate_fn
 
-        def prop(pt):
-            pos = pt.reshape(k, 2)
-            nxt_list = [propagate(pos[e], policy_tuple[e], obstacles) for e in range(k)]
-            return jnp.stack(nxt_list, axis=0).reshape(-1)
+        if self.heading_draws > 0 and key is not None:
+            H = self.heading_draws
 
-        propagated = jax.vmap(prop)(sigmas)
+            def prop_draw(pt, draw_key):
+                pos = pt.reshape(k, 2)
+                keys = jax.random.split(draw_key, k)
+                nxt = [propagate(pos[e], policy_tuple[e], obstacles, keys[e]) for e in range(k)]
+                return jnp.stack(nxt, axis=0).reshape(-1)
+
+            draw_keys = jax.random.split(key, H)
+            # (P, H, n): every sigma point under H heading draws.
+            draws = jax.vmap(lambda pt: jax.vmap(lambda kk: prop_draw(pt, kk))(draw_keys))(sigmas)
+            propagated = jnp.mean(draws, axis=1)
+            dev = draws - propagated[:, None, :]
+            heading_cov = jnp.mean(jnp.einsum('phi,phj->pij', dev, dev), axis=0) / max(H - 1, 1)
+            extra = heading_cov
+        else:
+
+            def prop(pt):
+                pos = pt.reshape(k, 2)
+                nxt_list = [propagate(pos[e], policy_tuple[e], obstacles) for e in range(k)]
+                return jnp.stack(nxt_list, axis=0).reshape(-1)
+
+            propagated = jax.vmap(prop)(sigmas)
+            extra = 0.0
+
         mu_pred = jnp.sum(self.wm[:, None] * propagated, axis=0)
         diff = propagated - mu_pred
-        sigma_pred = jnp.einsum('i,ij,ik->jk', self.wc, diff, diff) + self.Q
+        sigma_pred = jnp.einsum('i,ij,ik->jk', self.wc, diff, diff) + self.Q + extra
         return mu_pred, sigma_pred
+
+    def _predicted_and_observed(self, sigmas, mu_pred, observation):
+        if self.obs_model is None:
+            k = self.k
+            sensor_pos = self.sensor_pos
+
+            def obs_fn(pt):
+                pos = pt.reshape(k, 2)
+                return jnp.linalg.norm(pos - sensor_pos, axis=-1)
+
+            return jax.vmap(obs_fn)(sigmas), observation.ranges, self.R
+        pred = self.obs_model.predicted(sigmas, mu_pred)
+        y = self.obs_model.vector(observation)
+        sig = self.obs_model.noise_std(observation) * self.observation_sigma_scale
+        return pred, y, sig**2 * jnp.eye(y.shape[0])
 
     def update(self, mu_pred, sigma_pred, observation):
         sigmas = _sigma_points(mu_pred, sigma_pred, self.lam)
-        k = self.k
-        sensor_pos = self.sensor_pos
-
-        def obs_fn(pt):
-            pos = pt.reshape(k, 2)
-            return jnp.linalg.norm(pos - sensor_pos, axis=-1)
-
-        pred_obs = jax.vmap(obs_fn)(sigmas)
+        pred_obs, y, R = self._predicted_and_observed(sigmas, mu_pred, observation)
         z_pred = jnp.sum(self.wm[:, None] * pred_obs, axis=0)
 
         dz = pred_obs - z_pred
-        S = jnp.einsum('i,ij,ik->jk', self.wc, dz, dz) + self.R
+        S = jnp.einsum('i,ij,ik->jk', self.wc, dz, dz) + R
 
         dx = sigmas - mu_pred
         Pxz = jnp.einsum('i,ij,ik->jk', self.wc, dx, dz)
 
         K = Pxz @ jnp.linalg.inv(S)
-        innovation = observation.ranges - z_pred
+        innovation = y - z_pred
         mu = mu_pred + K @ innovation
         sigma = sigma_pred - K @ S @ K.T
         sigma = 0.5 * (sigma + sigma.T)
         return mu, sigma
 
-    def step(self, mu, sigma, policy, obstacles, observation):
-        mu_pred, sigma_pred = self.predict(mu, sigma, policy, obstacles)
+    def step(self, mu, sigma, policy, obstacles, observation, key=None):
+        mu_pred, sigma_pred = self.predict(mu, sigma, policy, obstacles, key)
         return self.update(mu_pred, sigma_pred, observation)

@@ -9,25 +9,65 @@ from nbf.domains.pursuit_evasion.env import (
     L,
     PursuitEvasionEnv,
     PursuitEvasionObservation,
-    propagate_deterministic,
+    propagate_with_key,
+    sensor_ranges,
 )
 from nbf.filters.gmf import GMF
 
+GMF_HEADING_DRAWS = 8
+
+
+class PEObservationModel(eqx.Module):
+    sensors: jax.Array
+    num_sensors: int = eqx.field(static=True)
+    num_evaders: int = eqx.field(static=True)
+    shuffled: bool = eqx.field(static=True)
+
+    def __init__(self, env: PursuitEvasionEnv):
+        self.sensors = env.sensors
+        self.num_sensors = env.num_sensors
+        self.num_evaders = env.num_evaders
+        self.shuffled = bool(env.shuffle_observations and env.num_evaders > 1)
+
+    def predicted(self, sigmas: jax.Array, mu: jax.Array) -> jax.Array:
+        m, k = self.num_sensors, self.num_evaders
+        P = sigmas.shape[0]
+        r = sensor_ranges(sigmas.reshape(P, k, 2), self.sensors)  # (P, m, k)
+        if self.shuffled:
+            order = jnp.argsort(sensor_ranges(mu.reshape(k, 2), self.sensors), axis=-1)  # (m, k)
+            r = jnp.take_along_axis(r, jnp.broadcast_to(order[None], r.shape), axis=-1)
+        return r.reshape(P, m * k)
+
+    def vector(self, observation) -> jax.Array:
+        m, k = self.num_sensors, self.num_evaders
+        ranges = observation.ranges.reshape(m, k)
+        if self.shuffled:
+            ranges = jnp.sort(ranges, axis=-1)
+        return ranges.reshape(m * k)
+
+    def noise_std(self, observation) -> jax.Array:
+        return observation.observation_sigma
+
 
 def make_pe_gmf(
-    num_evaders: int,
+    num_evaders: int | None = None,
     M: int = 1,
     observation_sigma_scale: float = 1.0,
     kl_merge: float = 0.5,
     weight_prune: float = 0.01,
+    *,
+    env: PursuitEvasionEnv | None = None,
+    heading_draws: int = GMF_HEADING_DRAWS,
 ) -> GMF:
+    if env is not None:
+        num_evaders = env.num_evaders
     n = 2 * num_evaders
     return GMF(
         num_evaders=num_evaders,
         sigma_dyn=SIGMA_DYN,
         sigma_obs=SIGMA_OBS_MAX,
         sensor_pos=SENSOR_POS,
-        propagate_fn=propagate_deterministic,
+        propagate_fn=propagate_with_key if env is not None else _propagate_fixed_heading,
         init_mu=jnp.full(n, L / 2),
         init_sigma=((L / 2) ** 2 * jnp.eye(n)),
         M=M,
@@ -35,7 +75,13 @@ def make_pe_gmf(
         kl_merge=kl_merge,
         weight_prune=weight_prune,
         observation_sigma_scale=observation_sigma_scale,
+        obs_model=PEObservationModel(env) if env is not None else None,
+        heading_draws=heading_draws if env is not None else 0,
     )
+
+
+def _propagate_fixed_heading(position, policy, obstacles):
+    return propagate_with_key(position, policy, obstacles, jax.random.PRNGKey(0))
 
 
 def make_env_kn(
@@ -52,14 +98,6 @@ def make_env_kn(
 
 
 def override_sigma(env, state0_b, obs0_b, states_next_b, sigma: float, key):
-    """Re-noise a rolled-out batch at a pinned observation sigma.
-
-    Positions do not depend on the observation noise, so one rollout serves every
-    sigma of a sweep; the ranges are redrawn from the true positions at `sigma` and the
-    sigma fields of states and observations are overwritten so the filters weight with
-    the pinned value. Ranges come back in canonical evader order; with shuffled
-    observations the likelihood is permutation-marginalized, so the order is immaterial.
-    """
     sigma_arr = jnp.asarray(sigma, dtype=jnp.float32)
     state0_b = eqx.tree_at(
         lambda s: s.observation_sigma,

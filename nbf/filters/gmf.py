@@ -20,24 +20,17 @@ from nbf.filters.kalman import UKF, _sigma_points
 
 def _ukf_update_with_loglik(ukf: UKF, mu_pred, sigma_pred, observation):
     sigmas = _sigma_points(mu_pred, sigma_pred, ukf.lam)
-    k = ukf.k
-    sensor_pos = ukf.sensor_pos
-
-    def obs_fn(pt):
-        pos = pt.reshape(k, 2)
-        return jnp.linalg.norm(pos - sensor_pos, axis=-1)
-
-    pred_obs = jax.vmap(obs_fn)(sigmas)
+    pred_obs, y, R = ukf._predicted_and_observed(sigmas, mu_pred, observation)
     z_pred = jnp.sum(ukf.wm[:, None] * pred_obs, axis=0)
     dz = pred_obs - z_pred
-    S = jnp.einsum('i,ij,ik->jk', ukf.wc, dz, dz) + ukf.R
+    S = jnp.einsum('i,ij,ik->jk', ukf.wc, dz, dz) + R
     dx = sigmas - mu_pred
     Pxz = jnp.einsum('i,ij,ik->jk', ukf.wc, dx, dz)
 
     S_inv = jnp.linalg.inv(S)
     K = Pxz @ S_inv
 
-    innovation = observation.ranges - z_pred
+    innovation = y - z_pred
     mu = mu_pred + K @ innovation
     sigma = sigma_pred - K @ S @ K.T
     sigma = 0.5 * (sigma + sigma.T)
@@ -45,8 +38,14 @@ def _ukf_update_with_loglik(ukf: UKF, mu_pred, sigma_pred, observation):
     S_sym = 0.5 * (S + S.T)
     _, logdet = jnp.linalg.slogdet(S_sym)
     quad = innovation @ jnp.linalg.solve(S_sym, innovation)
-    log_lik = -0.5 * (k * jnp.log(2.0 * jnp.pi) + logdet + quad)
+    d = y.shape[0]
+    log_lik = -0.5 * (d * jnp.log(2.0 * jnp.pi) + logdet + quad)
     return mu, sigma, log_lik
+
+
+def _observation_present(observation) -> jax.Array:
+    """The no-observation sentinel is a negative first range."""
+    return jnp.reshape(observation.ranges, (-1,))[0] >= 0.0
 
 
 def _moment_match(w_i, mu_i, sig_i, w_j, mu_j, sig_j):
@@ -102,6 +101,8 @@ class GMF(eqx.Module):
         kl_merge: float = 0.5,
         weight_prune: float = 0.01,
         observation_sigma_scale: float = 1.0,
+        obs_model=None,
+        heading_draws: int = 0,
     ):
         self.M = M
         self.ukf = UKF(
@@ -111,6 +112,8 @@ class GMF(eqx.Module):
             sensor_pos=sensor_pos,
             propagate_fn=propagate_fn,
             observation_sigma_scale=observation_sigma_scale,
+            obs_model=obs_model,
+            heading_draws=heading_draws,
         )
         self.init_mu = jnp.asarray(init_mu)
         self.init_sigma = jnp.asarray(init_sigma)
@@ -127,11 +130,16 @@ class GMF(eqx.Module):
         weights = jnp.full((self.M,), 1.0 / self.M)
         return weights, mus, sigmas
 
-    def predict(self, weights, mus, sigmas, policy, obstacles):
-        def one(mu, sigma):
-            return self.ukf.predict(mu, sigma, policy, obstacles)
-
-        mus_p, sigmas_p = jax.vmap(one)(mus, sigmas)
+    def predict(self, weights, mus, sigmas, policy, obstacles, key=None):
+        if key is None:
+            mus_p, sigmas_p = jax.vmap(lambda mu, sg: self.ukf.predict(mu, sg, policy, obstacles))(
+                mus, sigmas
+            )
+        else:
+            keys = jax.random.split(key, self.M)
+            mus_p, sigmas_p = jax.vmap(
+                lambda mu, sg, kk: self.ukf.predict(mu, sg, policy, obstacles, kk)
+            )(mus, sigmas, keys)
         return weights, mus_p, sigmas_p
 
     def update(self, weights, mus, sigmas, observation):
@@ -178,9 +186,12 @@ class GMF(eqx.Module):
         w = w / jnp.where(total > 0.0, total, 1.0)
         return w, mus, sigmas
 
-    def step(self, weights, mus, sigmas, policy, obstacles, observation):
-        w, mu, sg = self.predict(weights, mus, sigmas, policy, obstacles)
-        w, mu, sg = self.update(w, mu, sg, observation)
-        w, mu, sg = self.merge(w, mu, sg)
-        w, mu, sg = self.prune(w, mu, sg)
-        return w, mu, sg
+    def step(self, weights, mus, sigmas, policy, obstacles, observation, key=None):
+        w, mu, sg = self.predict(weights, mus, sigmas, policy, obstacles, key)
+
+        def with_obs(args):
+            w, mu, sg = self.update(*args, observation)
+            w, mu, sg = self.merge(w, mu, sg)
+            return self.prune(w, mu, sg)
+
+        return jax.lax.cond(_observation_present(observation), with_obs, lambda a: a, (w, mu, sg))
