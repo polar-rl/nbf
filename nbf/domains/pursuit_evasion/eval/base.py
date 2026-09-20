@@ -39,7 +39,7 @@ def make_pe_gmf(
 
 
 def make_env_kn(
-    k: int, episode_length: int, policy_tuple, num_sensors: int = 1
+    k: int, episode_length: int, policy_tuple, num_sensors: int = 1, obs_interval: int = 1
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders=k,
@@ -47,6 +47,7 @@ def make_env_kn(
         policy=policy_tuple,
         shuffle_observations=True,
         num_sensors=num_sensors,
+        obs_interval=obs_interval,
     )
 
 
@@ -77,6 +78,8 @@ def override_sigma(env, state0_b, obs0_b, states_next_b, sigma: float, key):
     )
     true_ranges = env.true_ranges(states_next_b.positions)  # (B, T, m*k)
     new_ranges = true_ranges + sigma_arr * jax.random.normal(key, true_ranges.shape)
+    mask = env.observation_mask(true_ranges.shape[1])
+    new_ranges = jnp.where(mask[None, :, None], new_ranges, -1.0)
     sigma_field = jnp.broadcast_to(sigma_arr, true_ranges.shape[:-1])
     obs_next_b = PursuitEvasionObservation(ranges=new_ranges, observation_sigma=sigma_field)
     prev_ranges = jnp.concatenate([obs0_b.ranges[:, None, :], new_ranges[:, :-1, :]], axis=1)

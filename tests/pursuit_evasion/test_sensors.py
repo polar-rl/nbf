@@ -167,3 +167,48 @@ def test_rollout_and_override_sigma_shapes():
     assert out[4].ranges.shape == (B, T, m * k)
     truth = env.true_ranges(states_next_b.positions)
     assert float(jnp.max(jnp.abs(out[4].ranges - truth))) < 0.5
+
+
+def test_obs_interval_emits_sentinel_between_observations():
+    k, m, D, T = 3, 2, 5, 20
+    env = PursuitEvasionEnv(
+        num_evaders=k,
+        time_limit=T,
+        policy=make_random_walk_policy(),
+        shuffle_observations=True,
+        num_sensors=m,
+        obs_interval=D,
+    )
+    assert jnp.array_equal(env.observation_mask(T), (jnp.arange(1, T + 1) % D) == 0)
+    state, _ = env.reset(jax.random.PRNGKey(11))
+    seen = []
+    for t in range(T):
+        state, ts = env.step(state, 0, jax.random.PRNGKey(20 + t))
+        seen.append(bool(env.observation_present(ts.observation)))
+        if not seen[-1]:
+            assert bool(jnp.all(ts.observation.ranges == -1.0))
+    assert seen == [((t + 1) % D) == 0 for t in range(T)]
+    # Unobserved steps weight uniformly and carry a zero feature.
+    parts = _particles(jax.random.PRNGKey(12), 8, k)
+    sentinel = PursuitEvasionObservation(
+        ranges=jnp.full(m * k, -1.0), observation_sigma=jnp.asarray(0.3)
+    )
+    w, _ = env.observation_weights(parts, None, sentinel)
+    assert jnp.allclose(w, 1.0 / 8)
+    assert float(jnp.abs(likelihood_features(env, parts, sentinel)).max()) == 0.0
+    with pytest.raises(ValueError):
+        PursuitEvasionEnv(num_evaders=k, obs_interval=0)
+
+
+def test_override_sigma_keeps_unobserved_steps():
+    k, m, D, T, B = 3, 2, 4, 8, 2
+    env = make_env_kn(k, T, (make_random_walk_policy(),) * k, num_sensors=m, obs_interval=D)
+    state0_b, obs0_b, states_next_b, _, obs_next_b = rollout_episodes(
+        env, T, B, jax.random.PRNGKey(13)
+    )
+    out = override_sigma(env, state0_b, obs0_b, states_next_b, 0.05, jax.random.PRNGKey(14))
+    mask = env.observation_mask(T)
+    assert bool(jnp.all(out[4].ranges[:, ~mask] == -1.0)) and bool(
+        jnp.all(out[4].ranges[:, mask] >= 0.0)
+    )
+    assert bool(jnp.all((obs_next_b.ranges[:, :, 0] < 0) == ~mask[None, :]))

@@ -101,7 +101,13 @@ def run_subcell(
     policy = make_policy(
         source, name, jax.random.fold_in(pol_key, zlib.crc32(name.encode()) % (2**31))
     )
-    env = make_env_kn(k, args.episode_length, (policy,) * k, num_sensors=args.num_sensors)
+    env = make_env_kn(
+        k,
+        args.episode_length,
+        (policy,) * k,
+        num_sensors=args.num_sensors,
+        obs_interval=args.obs_interval,
+    )
     episodes = rollout_episodes(env, args.episode_length, args.num_episodes, rollout_key)
     if sigma is not None:
         state0_b, obs0_b, states_next_b, _, _ = episodes
@@ -109,7 +115,7 @@ def run_subcell(
     states_next_b = episodes[2]
     return score_methods(
         methods,
-        tag=f'{cell}/{subcell} k={k} m={args.num_sensors} seed {seed}',
+        tag=f'{cell}/{subcell} k={k} m={args.num_sensors} D={args.obs_interval} seed {seed}',
         key=method_key,
         env=env,
         episodes=episodes,
@@ -139,6 +145,12 @@ def main() -> None:
         type=int,
         default=0,
         help='range sensors; 0 = from data_config.json (1 for models trained before the field)',
+    )
+    parser.add_argument(
+        '--obs_interval',
+        type=int,
+        default=0,
+        help='ranges every D steps; 0 = from data_config.json (1 for older models)',
     )
     parser.add_argument('--methods', type=str, default=DEFAULT_METHODS)
     parser.add_argument('--num_episodes', type=int, default=100)
@@ -193,7 +205,9 @@ def main() -> None:
             raise SystemExit(f'--model_dir is required for methods {needs_model}')
         if not k:
             raise SystemExit('--k is required without --model_dir')
-        data_cfg = DataConfig(num_evaders=k, num_sensors=args.num_sensors or 1)
+        data_cfg = DataConfig(
+            num_evaders=k, num_sensors=args.num_sensors or 1, obs_interval=args.obs_interval or 1
+        )
         sampling_model = density_model = None
         print('Methods-only mode: no model')
     else:
@@ -205,6 +219,10 @@ def main() -> None:
         if args.num_sensors and args.num_sensors != data_cfg.num_sensors:
             raise SystemExit(
                 f'--num_sensors {args.num_sensors} does not match the model (m={data_cfg.num_sensors})'
+            )
+        if args.obs_interval and args.obs_interval != data_cfg.obs_interval:
+            raise SystemExit(
+                f'--obs_interval {args.obs_interval} does not match the model (D={data_cfg.obs_interval})'
             )
         density_model, _ = load_embedding_model(args.model_dir, jax.random.PRNGKey(0))
         if args.fm_num_steps:
@@ -218,11 +236,13 @@ def main() -> None:
         print(f'Loaded embedding model from {args.model_dir} (k={k})')
     args.episode_length = args.episode_length or data_cfg.episode_length
     args.num_sensors = args.num_sensors or data_cfg.num_sensors
+    args.obs_interval = args.obs_interval or data_cfg.obs_interval
 
     if args.task_id >= 0:
         cell, subcell, policy_src, sigma, seed = tasks[args.task_id]
         print(
-            f'Task {args.task_id}/{len(tasks) - 1}: {cell}/{subcell} k={k} m={args.num_sensors} seed {seed}, '
+            f'Task {args.task_id}/{len(tasks) - 1}: {cell}/{subcell} k={k} m={args.num_sensors} '
+            f'D={args.obs_interval} seed {seed}, '
             f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
         )
         per_method = run_subcell(

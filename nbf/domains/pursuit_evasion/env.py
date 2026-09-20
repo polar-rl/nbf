@@ -204,6 +204,7 @@ class PursuitEvasionGenerator(eqx.Module):
 class PursuitEvasionEnv(eqx.Module):
     num_evaders: int = eqx.field(static=True)
     num_sensors: int = eqx.field(static=True)
+    obs_interval: int = eqx.field(static=True)
     time_limit: int = eqx.field(static=True)
     shuffle_observations: bool = eqx.field(static=True)
     interaction_radius: float = eqx.field(static=True)
@@ -227,9 +228,13 @@ class PursuitEvasionEnv(eqx.Module):
         interaction_radius: float = DEFAULT_INTERACTION_RADIUS,
         interaction_strength: float = DEFAULT_INTERACTION_STRENGTH,
         num_sensors: int = 1,
+        obs_interval: int = 1,
     ):
+        if int(obs_interval) < 1:
+            raise ValueError(f'obs_interval must be >= 1, got {obs_interval}')
         self.num_evaders = num_evaders
         self.num_sensors = int(num_sensors)
+        self.obs_interval = int(obs_interval)
         self.sensors = sensor_positions(self.num_sensors)
         self.time_limit = time_limit
         self.obstacles = obstacles
@@ -260,6 +265,13 @@ class PursuitEvasionEnv(eqx.Module):
     @property
     def _shuffled(self) -> bool:
         return self.shuffle_observations and self.num_evaders > 1
+
+    def observed_step(self, step_count) -> jax.Array:
+        return (jnp.asarray(step_count) % self.obs_interval) == 0
+
+    def observation_mask(self, T: int) -> jax.Array:
+        """(T,) bool: which of the steps 1..T carry an observation."""
+        return self.observed_step(jnp.arange(1, T + 1))
 
     def true_ranges(self, positions: jax.Array) -> jax.Array:
         """(..., k, 2) positions -> (..., m*k) noise-free ranges in sensor-major order."""
@@ -301,6 +313,7 @@ class PursuitEvasionEnv(eqx.Module):
         true_ranges = self.true_ranges(next_positions)
         noise = state.observation_sigma * jax.random.normal(obs_key, true_ranges.shape)
         ranges = self.shuffle_ranges(true_ranges + noise, perm_key)
+        ranges = jnp.where(self.observed_step(state.step_count + 1), ranges, -1.0)
         observation = PursuitEvasionObservation(
             ranges=ranges, observation_sigma=state.observation_sigma
         )
@@ -410,6 +423,7 @@ def build_pursuit_evasion_env(
     interaction_radius: float = DEFAULT_INTERACTION_RADIUS,
     interaction_strength: float = DEFAULT_INTERACTION_STRENGTH,
     num_sensors: int = 1,
+    obs_interval: int = 1,
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders,
@@ -420,4 +434,5 @@ def build_pursuit_evasion_env(
         interaction_radius=interaction_radius,
         interaction_strength=interaction_strength,
         num_sensors=num_sensors,
+        obs_interval=obs_interval,
     )

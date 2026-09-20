@@ -9,5 +9,6 @@ class DataConfig:
     episode_length: int = 20
     shuffle_observations: bool = False
     num_sensors: int = 1
+    obs_interval: int = 1
     interaction_radius: float = 1.5
     interaction_strength: float = 1.0
