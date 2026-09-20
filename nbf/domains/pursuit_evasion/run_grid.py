@@ -101,15 +101,15 @@ def run_subcell(
     policy = make_policy(
         source, name, jax.random.fold_in(pol_key, zlib.crc32(name.encode()) % (2**31))
     )
-    env = make_env_kn(k, args.episode_length, (policy,) * k)
+    env = make_env_kn(k, args.episode_length, (policy,) * k, num_sensors=args.num_sensors)
     episodes = rollout_episodes(env, args.episode_length, args.num_episodes, rollout_key)
     if sigma is not None:
         state0_b, obs0_b, states_next_b, _, _ = episodes
-        episodes = override_sigma(state0_b, obs0_b, states_next_b, sigma, noise_key)
+        episodes = override_sigma(env, state0_b, obs0_b, states_next_b, sigma, noise_key)
     states_next_b = episodes[2]
     return score_methods(
         methods,
-        tag=f'{cell}/{subcell} k={k} seed {seed}',
+        tag=f'{cell}/{subcell} k={k} m={args.num_sensors} seed {seed}',
         key=method_key,
         env=env,
         episodes=episodes,
@@ -134,6 +134,12 @@ def main() -> None:
     parser.add_argument('--model_dir', type=str, default=None)
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--k', type=int, default=0, help='evader count; 0 = from data_config.json')
+    parser.add_argument(
+        '--num_sensors',
+        type=int,
+        default=0,
+        help='range sensors; 0 = from data_config.json (1 for models trained before the field)',
+    )
     parser.add_argument('--methods', type=str, default=DEFAULT_METHODS)
     parser.add_argument('--num_episodes', type=int, default=100)
     parser.add_argument('--episode_length', type=int, default=0)
@@ -187,7 +193,7 @@ def main() -> None:
             raise SystemExit(f'--model_dir is required for methods {needs_model}')
         if not k:
             raise SystemExit('--k is required without --model_dir')
-        data_cfg = DataConfig(num_evaders=k)
+        data_cfg = DataConfig(num_evaders=k, num_sensors=args.num_sensors or 1)
         sampling_model = density_model = None
         print('Methods-only mode: no model')
     else:
@@ -196,6 +202,10 @@ def main() -> None:
         k = k or data_cfg.num_evaders
         if k != data_cfg.num_evaders:
             raise SystemExit(f'--k {k} does not match the model (k={data_cfg.num_evaders})')
+        if args.num_sensors and args.num_sensors != data_cfg.num_sensors:
+            raise SystemExit(
+                f'--num_sensors {args.num_sensors} does not match the model (m={data_cfg.num_sensors})'
+            )
         density_model, _ = load_embedding_model(args.model_dir, jax.random.PRNGKey(0))
         if args.fm_num_steps:
             sampling_model, _ = load_embedding_model(
@@ -207,11 +217,12 @@ def main() -> None:
             sampling_model = cast_velocity_net_bf16(sampling_model)
         print(f'Loaded embedding model from {args.model_dir} (k={k})')
     args.episode_length = args.episode_length or data_cfg.episode_length
+    args.num_sensors = args.num_sensors or data_cfg.num_sensors
 
     if args.task_id >= 0:
         cell, subcell, policy_src, sigma, seed = tasks[args.task_id]
         print(
-            f'Task {args.task_id}/{len(tasks) - 1}: {cell}/{subcell} k={k} seed {seed}, '
+            f'Task {args.task_id}/{len(tasks) - 1}: {cell}/{subcell} k={k} m={args.num_sensors} seed {seed}, '
             f'{args.num_episodes} episodes x T={args.episode_length}, methods={methods}'
         )
         per_method = run_subcell(

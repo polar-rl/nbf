@@ -1,7 +1,6 @@
-import jax.numpy as jnp
-
 import equinox as eqx
 import jax
+import jax.numpy as jnp
 
 from nbf.domains.pursuit_evasion.env import (
     SENSOR_POS,
@@ -39,16 +38,19 @@ def make_pe_gmf(
     )
 
 
-def make_env_kn(k: int, episode_length: int, policy_tuple) -> PursuitEvasionEnv:
+def make_env_kn(
+    k: int, episode_length: int, policy_tuple, num_sensors: int = 1
+) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders=k,
         time_limit=episode_length,
         policy=policy_tuple,
         shuffle_observations=True,
+        num_sensors=num_sensors,
     )
 
 
-def override_sigma(state0_b, obs0_b, states_next_b, sigma: float, key):
+def override_sigma(env, state0_b, obs0_b, states_next_b, sigma: float, key):
     """Re-noise a rolled-out batch at a pinned observation sigma.
 
     Positions do not depend on the observation noise, so one rollout serves every
@@ -73,7 +75,7 @@ def override_sigma(state0_b, obs0_b, states_next_b, sigma: float, key):
         obs0_b,
         jnp.broadcast_to(sigma_arr, obs0_b.observation_sigma.shape),
     )
-    true_ranges = jnp.linalg.norm(states_next_b.positions - SENSOR_POS, axis=-1)
+    true_ranges = env.true_ranges(states_next_b.positions)  # (B, T, m*k)
     new_ranges = true_ranges + sigma_arr * jax.random.normal(key, true_ranges.shape)
     sigma_field = jnp.broadcast_to(sigma_arr, true_ranges.shape[:-1])
     obs_next_b = PursuitEvasionObservation(ranges=new_ranges, observation_sigma=sigma_field)

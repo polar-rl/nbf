@@ -73,6 +73,7 @@ def build_env(data_cfg: DataConfig) -> PursuitEvasionEnv:
         shuffle_observations=data_cfg.shuffle_observations,
         interaction_radius=data_cfg.interaction_radius,
         interaction_strength=data_cfg.interaction_strength,
+        num_sensors=data_cfg.num_sensors,
     )
 
 

@@ -10,6 +10,20 @@ from nbf.base_types import Observation, State
 
 L = 10.0
 SENSOR_POS = jnp.array([5.0, 5.0])
+SENSOR_LAYOUT = jnp.array([[5.0, 5.0], [1.0, 1.0], [9.0, 9.0], [1.0, 9.0], [9.0, 1.0]])
+
+
+def sensor_positions(num_sensors: int) -> jax.Array:
+    if not 1 <= num_sensors <= SENSOR_LAYOUT.shape[0]:
+        raise ValueError(f'num_sensors must be in 1..{SENSOR_LAYOUT.shape[0]}, got {num_sensors}')
+    return SENSOR_LAYOUT[:num_sensors]
+
+
+def sensor_ranges(positions: jax.Array, sensors: jax.Array) -> jax.Array:
+    """(..., k, 2) positions, (m, 2) sensors -> (..., m, k) ranges."""
+    return jnp.linalg.norm(positions[..., None, :, :] - sensors[:, None, :], axis=-1)
+
+
 SPEED = 0.5
 SIGMA_DYN = 0.2
 SIGMA_OBS_MIN = 0.1
@@ -189,11 +203,13 @@ class PursuitEvasionGenerator(eqx.Module):
 
 class PursuitEvasionEnv(eqx.Module):
     num_evaders: int = eqx.field(static=True)
+    num_sensors: int = eqx.field(static=True)
     time_limit: int = eqx.field(static=True)
     shuffle_observations: bool = eqx.field(static=True)
     interaction_radius: float = eqx.field(static=True)
     interaction_strength: float = eqx.field(static=True)
     obstacles: jax.Array
+    sensors: jax.Array
     policy: tuple
     perm_indices: jax.Array
     generator: PursuitEvasionGenerator
@@ -210,8 +226,11 @@ class PursuitEvasionEnv(eqx.Module):
         shuffle_observations: bool = False,
         interaction_radius: float = DEFAULT_INTERACTION_RADIUS,
         interaction_strength: float = DEFAULT_INTERACTION_STRENGTH,
+        num_sensors: int = 1,
     ):
         self.num_evaders = num_evaders
+        self.num_sensors = int(num_sensors)
+        self.sensors = sensor_positions(self.num_sensors)
         self.time_limit = time_limit
         self.obstacles = obstacles
         self.shuffle_observations = shuffle_observations
@@ -233,10 +252,27 @@ class PursuitEvasionEnv(eqx.Module):
     def reset(self, key: jax.Array):
         state = self.generator(key)
         obs = PursuitEvasionObservation(
-            ranges=jnp.full(self.num_evaders, -1.0),
+            ranges=jnp.full(self.num_sensors * self.num_evaders, -1.0),
             observation_sigma=state.observation_sigma,
         )
         return state, restart(observation=obs)
+
+    @property
+    def _shuffled(self) -> bool:
+        return self.shuffle_observations and self.num_evaders > 1
+
+    def true_ranges(self, positions: jax.Array) -> jax.Array:
+        """(..., k, 2) positions -> (..., m*k) noise-free ranges in sensor-major order."""
+        r = sensor_ranges(positions, self.sensors)
+        return r.reshape(*r.shape[:-2], self.num_sensors * self.num_evaders)
+
+    def shuffle_ranges(self, ranges: jax.Array, key: jax.Array) -> jax.Array:
+        """Permute each sensor's k ranges independently; identity when not shuffling."""
+        if not self._shuffled:
+            return ranges
+        m, k = self.num_sensors, self.num_evaders
+        perms = jax.vmap(lambda kk: jax.random.permutation(kk, k))(jax.random.split(key, m))
+        return jnp.take_along_axis(ranges.reshape(m, k), perms, axis=1).reshape(m * k)
 
     def step_with_policy(self, state, policy, key):
         if not isinstance(policy, tuple | list):
@@ -262,12 +298,9 @@ class PursuitEvasionEnv(eqx.Module):
             observation_sigma=state.observation_sigma,
         )
 
-        true_ranges = jnp.linalg.norm(next_positions - SENSOR_POS, axis=-1)
+        true_ranges = self.true_ranges(next_positions)
         noise = state.observation_sigma * jax.random.normal(obs_key, true_ranges.shape)
-        ranges = true_ranges + noise
-        if self.shuffle_observations and self.num_evaders > 1:
-            perm = jax.random.permutation(perm_key, self.num_evaders)
-            ranges = ranges[perm]
+        ranges = self.shuffle_ranges(true_ranges + noise, perm_key)
         observation = PursuitEvasionObservation(
             ranges=ranges, observation_sigma=state.observation_sigma
         )
@@ -280,22 +313,7 @@ class PursuitEvasionEnv(eqx.Module):
 
     def observation_weights(self, particles, observations, gold_observation):
         has_obs = gold_observation.ranges[0] >= 0.0
-        sigma = gold_observation.observation_sigma
-        pred_ranges = jnp.linalg.norm(
-            particles.positions - SENSOR_POS,
-            axis=-1,
-        )
-
-        if self.shuffle_observations and self.num_evaders > 1:
-            permuted = gold_observation.ranges[self.perm_indices]
-            diff = pred_ranges[:, None, :] - permuted[None, :, :]
-            log_per_perm = -0.5 * jnp.sum((diff / sigma) ** 2, axis=-1)
-            log_likes = jax.scipy.special.logsumexp(log_per_perm, axis=1)
-        else:
-            log_likes = -0.5 * jnp.sum(
-                ((pred_ranges - gold_observation.ranges) / sigma) ** 2,
-                axis=-1,
-            )
+        log_likes = self.observation_log_prob(particles.positions, gold_observation)
         n = particles.positions.shape[0]
         weights = jax.lax.cond(
             has_obs,
@@ -308,20 +326,21 @@ class PursuitEvasionEnv(eqx.Module):
 
     @property
     def likelihood_feature_dim(self) -> int:
-        return 1 if (self.shuffle_observations and self.num_evaders > 1) else self.num_evaders
+        return 1 if self._shuffled else self.num_sensors * self.num_evaders
 
     def likelihood_features(self, particles, observation) -> jax.Array:
-        """Labelled ranges: (n, k) standardized range residuals, one Gaussian factor per
-        evader. Shuffled ranges do not factor, so the feature is the (n, 1) max-shifted
-        log-likelihood. Zero when no observation is present."""
+        """Labelled ranges: (n, m*k) standardized range residuals, one Gaussian factor per
+        (sensor, evader). Shuffled ranges couple all evaders through every sensor's
+        assignment sum, so the feature is the (n, 1) max-shifted log-likelihood. Zero when
+        no observation is present."""
         from nbf.filters.likelihood import LOG_FEATURE_FLOOR, RESIDUAL_CLIP
 
         has_obs = self.observation_present(observation)
-        if self.shuffle_observations and self.num_evaders > 1:
+        if self._shuffled:
             lp = self.observation_log_prob(particles.positions, observation)
             feat = jnp.maximum(lp - jnp.max(lp), LOG_FEATURE_FLOOR)[:, None]
         else:
-            pred_ranges = jnp.linalg.norm(particles.positions - SENSOR_POS, axis=-1)
+            pred_ranges = self.true_ranges(particles.positions)
             z = (observation.ranges - pred_ranges) / observation.observation_sigma
             feat = jnp.clip(z, -RESIDUAL_CLIP, RESIDUAL_CLIP)
         return jnp.where(has_obs, feat, 0.0)
@@ -340,14 +359,20 @@ class PursuitEvasionEnv(eqx.Module):
         return -2.0 * self.num_evaders * jnp.log(0.5 * L)
 
     def observation_log_prob(self, array: jax.Array, observation) -> jax.Array:
+        """(N, k, 2) positions -> (N,) log-likelihood up to a constant. With shuffled
+        ranges each sensor contributes a log-sum over the k! assignments of its ranges to
+        the evaders; the sensors' terms add, and every term depends on all k positions."""
         sigma = observation.observation_sigma
-        pred_ranges = jnp.linalg.norm(array - SENSOR_POS, axis=-1)  # (N, k)
-        if self.shuffle_observations and self.num_evaders > 1:
-            permuted = observation.ranges[self.perm_indices]  # (P, k)
-            diff = pred_ranges[:, None, :] - permuted[None, :, :]
+        m, k = self.num_sensors, self.num_evaders
+        pred_ranges = sensor_ranges(array, self.sensors)  # (N, m, k)
+        if self._shuffled:
+            obs = observation.ranges.reshape(m, k)
+            permuted = obs[:, self.perm_indices]  # (m, P, k)
+            diff = pred_ranges[:, :, None, :] - permuted[None, :, :, :]  # (N, m, P, k)
             log_per_perm = -0.5 * jnp.sum((diff / sigma) ** 2, axis=-1)
-            return jax.scipy.special.logsumexp(log_per_perm, axis=1)
-        return -0.5 * jnp.sum(((pred_ranges - observation.ranges) / sigma) ** 2, axis=-1)
+            return jnp.sum(jax.scipy.special.logsumexp(log_per_perm, axis=2), axis=1)
+        obs = observation.ranges.reshape(m, k)
+        return -0.5 * jnp.sum(((pred_ranges - obs) / sigma) ** 2, axis=(1, 2))
 
     def constrain(self, array: jax.Array) -> jax.Array:
         return jax.vmap(jax.vmap(lambda p: clip_to_valid(p, self.obstacles)))(array)
@@ -355,20 +380,18 @@ class PursuitEvasionEnv(eqx.Module):
     def observation_present(self, observation) -> jax.Array:
         return observation.ranges[0] >= 0.0
 
-    # Observation operator for ensemble Kalman filters (`nbf.filters.enkf`). A Kalman
-    # update needs an innovation whose components line up, so under shuffled ranges the
-    # operator sorts: the predicted ranges of every member and the observed ranges are
-    # compared in ascending order, which is a deterministic function of the state and
-    # needs no assignment of ranges to evaders. Labelled ranges are compared as they are.
     def _canonical_ranges(self, ranges: jax.Array) -> jax.Array:
-        if self.shuffle_observations and self.num_evaders > 1:
-            return jnp.sort(ranges, axis=-1)
-        return ranges
+        """(..., m*k) ranges sorted within each sensor's block when shuffled."""
+        if not self._shuffled:
+            return ranges
+        m, k = self.num_sensors, self.num_evaders
+        blocks = ranges.reshape(*ranges.shape[:-1], m, k)
+        return jnp.sort(blocks, axis=-1).reshape(*ranges.shape[:-1], m * k)
 
     def predicted_observation(self, flat: jax.Array) -> jax.Array:
-        """(m, 2k) flat positions -> (m, k) ranges in the order the operator compares."""
+        """(N, 2k) flat positions -> (N, m*k) ranges in the order the operator compares."""
         pos = flat.reshape(flat.shape[0], self.num_evaders, 2)
-        return self._canonical_ranges(jnp.linalg.norm(pos - SENSOR_POS, axis=-1))
+        return self._canonical_ranges(self.true_ranges(pos))
 
     def observation_vector(self, observation) -> jax.Array:
         return self._canonical_ranges(observation.ranges)
@@ -386,6 +409,7 @@ def build_pursuit_evasion_env(
     shuffle_observations: bool = False,
     interaction_radius: float = DEFAULT_INTERACTION_RADIUS,
     interaction_strength: float = DEFAULT_INTERACTION_STRENGTH,
+    num_sensors: int = 1,
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders,
@@ -395,4 +419,5 @@ def build_pursuit_evasion_env(
         shuffle_observations=shuffle_observations,
         interaction_radius=interaction_radius,
         interaction_strength=interaction_strength,
+        num_sensors=num_sensors,
     )
