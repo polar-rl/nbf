@@ -197,12 +197,16 @@ class PursuitEvasionObservation(Observation):
 class PursuitEvasionGenerator(eqx.Module):
     num_evaders: int = eqx.field(static=True)
     obstacles: jax.Array
+    sigma_obs_min: float = eqx.field(static=True, default=SIGMA_OBS_MIN)
+    sigma_obs_max: float = eqx.field(static=True, default=SIGMA_OBS_MAX)
 
     def __call__(self, key: jax.Array) -> PursuitEvasionState:
         pos_key, sigma_key = jax.random.split(key)
         positions = jax.random.uniform(pos_key, (self.num_evaders, 2), minval=0.0, maxval=L)
         positions = jax.vmap(lambda p: clip_to_valid(p, self.obstacles))(positions)
-        sigma = jax.random.uniform(sigma_key, (), minval=SIGMA_OBS_MIN, maxval=SIGMA_OBS_MAX)
+        sigma = jax.random.uniform(
+            sigma_key, (), minval=self.sigma_obs_min, maxval=self.sigma_obs_max
+        )
         return PursuitEvasionState(
             positions=positions,
             step_count=0,
@@ -239,9 +243,15 @@ class PursuitEvasionEnv(eqx.Module):
         interaction_strength: float = DEFAULT_INTERACTION_STRENGTH,
         num_sensors: int = 1,
         obs_interval: int = 1,
+        sigma_obs_min: float = SIGMA_OBS_MIN,
+        sigma_obs_max: float = SIGMA_OBS_MAX,
     ):
         if int(obs_interval) < 1:
             raise ValueError(f'obs_interval must be >= 1, got {obs_interval}')
+        if not 0.0 < sigma_obs_min <= sigma_obs_max:
+            raise ValueError(
+                f'need 0 < sigma_obs_min <= sigma_obs_max, got {sigma_obs_min}, {sigma_obs_max}'
+            )
         self.num_evaders = num_evaders
         self.num_sensors = int(num_sensors)
         self.obs_interval = int(obs_interval)
@@ -260,7 +270,12 @@ class PursuitEvasionEnv(eqx.Module):
         else:
             self.policy = (policy,) * num_evaders
         self.perm_indices = _enumerate_permutations(num_evaders)
-        self.generator = PursuitEvasionGenerator(num_evaders=num_evaders, obstacles=obstacles)
+        self.generator = PursuitEvasionGenerator(
+            num_evaders=num_evaders,
+            obstacles=obstacles,
+            sigma_obs_min=float(sigma_obs_min),
+            sigma_obs_max=float(sigma_obs_max),
+        )
         self.has_state_observation = False
         self.has_continuous_features = True
 
@@ -434,6 +449,8 @@ def build_pursuit_evasion_env(
     interaction_strength: float = DEFAULT_INTERACTION_STRENGTH,
     num_sensors: int = 1,
     obs_interval: int = 1,
+    sigma_obs_min: float = SIGMA_OBS_MIN,
+    sigma_obs_max: float = SIGMA_OBS_MAX,
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders,
@@ -445,4 +462,6 @@ def build_pursuit_evasion_env(
         interaction_strength=interaction_strength,
         num_sensors=num_sensors,
         obs_interval=obs_interval,
+        sigma_obs_min=sigma_obs_min,
+        sigma_obs_max=sigma_obs_max,
     )

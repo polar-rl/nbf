@@ -1,18 +1,18 @@
 model:
-  input_dim: 10
-  output_dim: 10
+  input_dim: 2
+  output_dim: 2
   embedding:
     block_type: set_transformer
-    embedding_dim: 128
+    embedding_dim: 64
     hidden_size: 256
     num_rounds: 3
     num_heads: 8
-    num_inducing: 64
+    num_inducing: 32
   generator:
     flow_type: fm
     conditioning: concat
-    fm_hidden_size: 512
-    fm_num_layers: 8
+    fm_hidden_size: 256
+    fm_num_layers: 6
     fm_time_embed_dim: 16
     fm_num_steps: 100
     fm_sigma_min: 1e-4
@@ -36,8 +36,10 @@ training:
   val_interval: 5000
 
 data:
-  num_evaders: 5
+  num_evaders: 1
   shuffle_observations: true
+  sigma_obs_min: 0.01
+  sigma_obs_max: 0.05
   episode_length: 20
 
-save_path: results/pursuit_evasion/k5_shuffled/nbf/
+save_path: results/pursuit_evasion/k1_sharp/nbf/

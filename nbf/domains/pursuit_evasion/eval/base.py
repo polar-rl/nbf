@@ -6,6 +6,7 @@ from nbf.domains.pursuit_evasion.env import (
     SENSOR_POS,
     SIGMA_DYN,
     SIGMA_OBS_MAX,
+    SIGMA_OBS_MIN,
     L,
     PursuitEvasionEnv,
     PursuitEvasionObservation,
@@ -85,7 +86,13 @@ def _propagate_fixed_heading(position, policy, obstacles):
 
 
 def make_env_kn(
-    k: int, episode_length: int, policy_tuple, num_sensors: int = 1, obs_interval: int = 1
+    k: int,
+    episode_length: int,
+    policy_tuple,
+    num_sensors: int = 1,
+    obs_interval: int = 1,
+    sigma_obs_min: float = SIGMA_OBS_MIN,
+    sigma_obs_max: float = SIGMA_OBS_MAX,
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders=k,
@@ -94,6 +101,8 @@ def make_env_kn(
         shuffle_observations=True,
         num_sensors=num_sensors,
         obs_interval=obs_interval,
+        sigma_obs_min=sigma_obs_min,
+        sigma_obs_max=sigma_obs_max,
     )
 
 

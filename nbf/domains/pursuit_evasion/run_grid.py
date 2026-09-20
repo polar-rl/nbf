@@ -52,7 +52,7 @@ from nbf.eval.grid import (
     write_shard,
 )
 
-SIGMAS = (0.01, 0.02, 0.05, 0.1, 0.2, 0.5, 1.0)  # 0.01-0.05 is the precise-range regime
+SIGMAS = (0.01, 0.02, 0.05)  # the precise-range regime; nothing above it
 DEFAULT_CHUNK_SIZE = 4
 
 
@@ -108,6 +108,8 @@ def run_subcell(
         (policy,) * k,
         num_sensors=args.num_sensors,
         obs_interval=args.obs_interval,
+        sigma_obs_min=args.sigma_obs_min,
+        sigma_obs_max=args.sigma_obs_max,
     )
     episodes = rollout_episodes(env, args.episode_length, args.num_episodes, rollout_key)
     if sigma is not None:
@@ -152,6 +154,18 @@ def main() -> None:
         type=int,
         default=0,
         help='ranges every D steps; 0 = from data_config.json (1 for older models)',
+    )
+    parser.add_argument(
+        '--sigma_obs_min',
+        type=float,
+        default=0.0,
+        help='per-episode noise range; 0 = from data_config',
+    )
+    parser.add_argument(
+        '--sigma_obs_max',
+        type=float,
+        default=0.0,
+        help='per-episode noise range; 0 = from data_config',
     )
     parser.add_argument('--methods', type=str, default=DEFAULT_METHODS)
     parser.add_argument('--num_episodes', type=int, default=100)
@@ -209,6 +223,10 @@ def main() -> None:
         data_cfg = DataConfig(
             num_evaders=k, num_sensors=args.num_sensors or 1, obs_interval=args.obs_interval or 1
         )
+        if args.sigma_obs_min:
+            data_cfg.sigma_obs_min = args.sigma_obs_min
+        if args.sigma_obs_max:
+            data_cfg.sigma_obs_max = args.sigma_obs_max
         sampling_model = density_model = None
         print('Methods-only mode: no model')
     else:
@@ -238,6 +256,13 @@ def main() -> None:
     args.episode_length = args.episode_length or data_cfg.episode_length
     args.num_sensors = args.num_sensors or data_cfg.num_sensors
     args.obs_interval = args.obs_interval or data_cfg.obs_interval
+    if args.model_dir is not None and (args.sigma_obs_min or args.sigma_obs_max):
+        raise SystemExit('the noise range comes from the model; do not pass --sigma_obs_min/max')
+    args.sigma_obs_min = data_cfg.sigma_obs_min
+    args.sigma_obs_max = data_cfg.sigma_obs_max
+    print(
+        f'noise range [{args.sigma_obs_min}, {args.sigma_obs_max}], m={args.num_sensors}, D={args.obs_interval}'
+    )
 
     if args.task_id >= 0:
         cell, subcell, policy_src, sigma, seed = tasks[args.task_id]

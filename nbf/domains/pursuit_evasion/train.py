@@ -75,6 +75,8 @@ def build_env(data_cfg: DataConfig) -> PursuitEvasionEnv:
         interaction_strength=data_cfg.interaction_strength,
         num_sensors=data_cfg.num_sensors,
         obs_interval=data_cfg.obs_interval,
+        sigma_obs_min=data_cfg.sigma_obs_min,
+        sigma_obs_max=data_cfg.sigma_obs_max,
     )
 
 

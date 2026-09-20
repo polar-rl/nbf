@@ -212,3 +212,16 @@ def test_override_sigma_keeps_unobserved_steps():
         jnp.all(out[4].ranges[:, mask] >= 0.0)
     )
     assert bool(jnp.all((obs_next_b.ranges[:, :, 0] < 0) == ~mask[None, :]))
+
+
+def test_noise_range_is_configurable():
+    env = PursuitEvasionEnv(num_evaders=2, sigma_obs_min=0.01, sigma_obs_max=0.05)
+    sig = jnp.stack([env.reset(jax.random.PRNGKey(i))[0].observation_sigma for i in range(64)])
+    assert float(sig.min()) >= 0.01 and float(sig.max()) <= 0.05 and float(sig.std()) > 0.0
+    default = PursuitEvasionEnv(num_evaders=2)
+    sig_d = jnp.stack(
+        [default.reset(jax.random.PRNGKey(i))[0].observation_sigma for i in range(64)]
+    )
+    assert float(sig_d.min()) >= 0.1 and float(sig_d.max()) <= 0.5
+    with pytest.raises(ValueError):
+        PursuitEvasionEnv(num_evaders=2, sigma_obs_min=0.1, sigma_obs_max=0.05)

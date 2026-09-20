@@ -31,12 +31,15 @@ training:
   episodes_per_rollout: 64
   grad_steps_per_rollout: 40
   rollout_fm_steps: 10
-  rollout_bf16: false
+  rollout_bf16: true
   val_episodes: 64
   val_interval: 5000
 
 data:
   num_evaders: 5
+  shuffle_observations: true
+  sigma_obs_min: 0.01
+  sigma_obs_max: 0.05
   episode_length: 20
 
-save_path: results/pursuit_evasion/k5/nbf/
+save_path: results/pursuit_evasion/k5_sharp/nbf/
