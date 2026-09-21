@@ -225,3 +225,42 @@ def test_noise_range_is_configurable():
     assert float(sig_d.min()) >= 0.1 and float(sig_d.max()) <= 0.5
     with pytest.raises(ValueError):
         PursuitEvasionEnv(num_evaders=2, sigma_obs_min=0.1, sigma_obs_max=0.05)
+
+
+def test_feature_modes_shuffled():
+    k, n = 3, 6
+    parts = _particles(jax.random.PRNGKey(21), n, k)
+    ranges = PursuitEvasionEnv(num_evaders=k, shuffle_observations=True).true_ranges(
+        parts.positions[0]
+    )
+    obs = PursuitEvasionObservation(ranges=ranges, observation_sigma=jnp.asarray(0.01))
+    envs = {
+        m: PursuitEvasionEnv(num_evaders=k, shuffle_observations=True, feature_mode=m)
+        for m in ('nats', 'range', 'both')
+    }
+    f = {m: likelihood_features(e, parts, obs) for m, e in envs.items()}
+    assert f['nats'].shape == (n, 1) and f['range'].shape == (n, 1) and f['both'].shape == (n, 2)
+    assert likelihood_feature_dim(envs['both']) == 2
+    assert jnp.allclose(f['both'][:, :1], f['nats']) and jnp.allclose(f['both'][:, 1:], f['range'])
+    # Particle 0 is the truth: best particle sits at 0 in both units.
+    assert float(f['nats'][0, 0]) == 0.0 and float(f['range'][0, 0]) == 0.0
+    # At sigma 0.01 the nats feature floors every other particle; the range feature stays graded.
+    assert bool(jnp.all(f['nats'][1:, 0] == -30.0))
+    rng = f['range'][1:, 0]
+    assert bool(jnp.all(rng < 0.0)) and float(jnp.std(rng)) > 0.0 and float(rng.min()) >= -20.0
+    # Range feature is sigma-invariant: same positions at sigma 0.05 give the same range block.
+    obs5 = PursuitEvasionObservation(ranges=ranges, observation_sigma=jnp.asarray(0.05))
+    assert jnp.allclose(likelihood_features(envs['range'], parts, obs5), f['range'], atol=1e-4)
+    with pytest.raises(ValueError):
+        PursuitEvasionEnv(num_evaders=k, feature_mode='bogus')
+
+
+def test_feature_modes_labelled():
+    k, n = 2, 4
+    env_b = PursuitEvasionEnv(num_evaders=k, shuffle_observations=False, feature_mode='both')
+    parts = _particles(jax.random.PRNGKey(22), n, k)
+    ranges = env_b.true_ranges(parts.positions[0]) + 0.1
+    obs = PursuitEvasionObservation(ranges=ranges, observation_sigma=jnp.asarray(0.05))
+    feat = likelihood_features(env_b, parts, obs)
+    assert feat.shape == (n, 2 * k) and likelihood_feature_dim(env_b) == 2 * k
+    assert jnp.allclose(feat[0, :k], 2.0, atol=1e-4) and jnp.allclose(feat[0, k:], 0.1, atol=1e-4)

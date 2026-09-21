@@ -93,6 +93,7 @@ def make_env_kn(
     obs_interval: int = 1,
     sigma_obs_min: float = SIGMA_OBS_MIN,
     sigma_obs_max: float = SIGMA_OBS_MAX,
+    feature_mode: str = 'nats',
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders=k,
@@ -103,6 +104,7 @@ def make_env_kn(
         obs_interval=obs_interval,
         sigma_obs_min=sigma_obs_min,
         sigma_obs_max=sigma_obs_max,
+        feature_mode=feature_mode,
     )
 
 

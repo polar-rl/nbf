@@ -77,6 +77,7 @@ def build_env(data_cfg: DataConfig) -> PursuitEvasionEnv:
         obs_interval=data_cfg.obs_interval,
         sigma_obs_min=data_cfg.sigma_obs_min,
         sigma_obs_max=data_cfg.sigma_obs_max,
+        feature_mode=data_cfg.feature_mode,
     )
 
 

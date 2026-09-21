@@ -110,6 +110,7 @@ def run_subcell(
         obs_interval=args.obs_interval,
         sigma_obs_min=args.sigma_obs_min,
         sigma_obs_max=args.sigma_obs_max,
+        feature_mode=args.feature_mode,
     )
     episodes = rollout_episodes(env, args.episode_length, args.num_episodes, rollout_key)
     if sigma is not None:
@@ -260,6 +261,7 @@ def main() -> None:
         raise SystemExit('the noise range comes from the model; do not pass --sigma_obs_min/max')
     args.sigma_obs_min = data_cfg.sigma_obs_min
     args.sigma_obs_max = data_cfg.sigma_obs_max
+    args.feature_mode = data_cfg.feature_mode  # models trained before the field read 'nats'
     print(
         f'noise range [{args.sigma_obs_min}, {args.sigma_obs_max}], m={args.num_sensors}, D={args.obs_interval}'
     )

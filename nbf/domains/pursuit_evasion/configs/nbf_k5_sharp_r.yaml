@@ -1,0 +1,46 @@
+model:
+  input_dim: 10
+  output_dim: 10
+  embedding:
+    block_type: set_transformer
+    embedding_dim: 128
+    hidden_size: 256
+    num_rounds: 3
+    num_heads: 8
+    num_inducing: 64
+  generator:
+    flow_type: fm
+    conditioning: concat
+    fm_hidden_size: 512
+    fm_num_layers: 8
+    fm_time_embed_dim: 16
+    fm_num_steps: 100
+    fm_sigma_min: 1e-4
+
+training:
+  num_iterations: 100000
+  learning_rate: 1.0e-4
+  end_learning_rate: 1.0e-6
+  warmup_steps: 5000
+  batch_size: 256
+  log_interval: 100
+  checkpoint_interval: 5000
+  clip_grad_norm: 1.0
+  seed: 0
+  rollout_num_particles: 2048
+  episodes_per_rollout: 64
+  grad_steps_per_rollout: 40
+  rollout_fm_steps: 10
+  rollout_bf16: true
+  val_episodes: 64
+  val_interval: 5000
+
+data:
+  num_evaders: 5
+  shuffle_observations: true
+  sigma_obs_min: 0.01
+  sigma_obs_max: 0.05
+  feature_mode: both
+  episode_length: 20
+
+save_path: results/pursuit_evasion/k5_sharp_r/nbf/

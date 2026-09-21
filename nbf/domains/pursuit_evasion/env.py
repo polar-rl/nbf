@@ -11,6 +11,11 @@ from nbf.base_types import Observation, State
 L = 10.0
 SENSOR_POS = jnp.array([5.0, 5.0])
 SENSOR_LAYOUT = jnp.array([[5.0, 5.0], [1.0, 1.0], [9.0, 9.0], [1.0, 9.0], [9.0, 1.0]])
+FEATURE_MODES = (
+    'nats',
+    'range',
+    'both',
+)  # units of the likelihood feature; see likelihood_features
 
 
 def sensor_positions(num_sensors: int) -> jax.Array:
@@ -219,6 +224,7 @@ class PursuitEvasionEnv(eqx.Module):
     num_evaders: int = eqx.field(static=True)
     num_sensors: int = eqx.field(static=True)
     obs_interval: int = eqx.field(static=True)
+    feature_mode: str = eqx.field(static=True)
     time_limit: int = eqx.field(static=True)
     shuffle_observations: bool = eqx.field(static=True)
     interaction_radius: float = eqx.field(static=True)
@@ -245,9 +251,13 @@ class PursuitEvasionEnv(eqx.Module):
         obs_interval: int = 1,
         sigma_obs_min: float = SIGMA_OBS_MIN,
         sigma_obs_max: float = SIGMA_OBS_MAX,
+        feature_mode: str = 'nats',
     ):
         if int(obs_interval) < 1:
             raise ValueError(f'obs_interval must be >= 1, got {obs_interval}')
+        if feature_mode not in FEATURE_MODES:
+            raise ValueError(f'feature_mode must be one of {FEATURE_MODES}, got {feature_mode!r}')
+        self.feature_mode = feature_mode
         if not 0.0 < sigma_obs_min <= sigma_obs_max:
             raise ValueError(
                 f'need 0 < sigma_obs_min <= sigma_obs_max, got {sigma_obs_min}, {sigma_obs_max}'
@@ -364,23 +374,43 @@ class PursuitEvasionEnv(eqx.Module):
 
     @property
     def likelihood_feature_dim(self) -> int:
-        return 1 if self._shuffled else self.num_sensors * self.num_evaders
+        base = 1 if self._shuffled else self.num_sensors * self.num_evaders
+        return 2 * base if self.feature_mode == 'both' else base
 
     def likelihood_features(self, particles, observation) -> jax.Array:
-        """Labelled ranges: (n, m*k) standardized range residuals, one Gaussian factor per
-        (sensor, evader). Shuffled ranges couple all evaders through every sensor's
-        assignment sum, so the feature is the (n, 1) max-shifted log-likelihood. Zero when
-        no observation is present."""
+        """Per-particle likelihood features, zero when no observation is present.
+
+        Labelled ranges factor per (sensor, evader): one residual each. Shuffled ranges couple
+        all evaders through every sensor's assignment sum: one scalar, the log-likelihood
+        shifted so the best particle sits at 0.
+
+        `feature_mode` picks the units. 'nats': standardized residuals clipped at
+        RESIDUAL_CLIP sigma (labelled) or the shifted log-likelihood floored at
+        LOG_FEATURE_FLOOR nats (shuffled), the NeurIPS/retired features. 'range': the same
+        quantities in range units, residual r_obs - r_pred (labelled) or minus the root of
+        the excess squared range residual over the best particle (shuffled), clipped at
+        RESIDUAL_CLIP range units, so at small sigma the encoder still sees the graded
+        landscape instead of one particle above a floor. 'both' concatenates the two."""
         from nbf.filters.likelihood import LOG_FEATURE_FLOOR, RESIDUAL_CLIP
 
         has_obs = self.observation_present(observation)
+        sigma = observation.observation_sigma
+        blocks = []
         if self._shuffled:
             lp = self.observation_log_prob(particles.positions, observation)
-            feat = jnp.maximum(lp - jnp.max(lp), LOG_FEATURE_FLOOR)[:, None]
+            excess = lp - jnp.max(lp)  # <= 0, nats
+            if self.feature_mode in ('nats', 'both'):
+                blocks.append(jnp.maximum(excess, LOG_FEATURE_FLOOR)[:, None])
+            if self.feature_mode in ('range', 'both'):
+                rng = -jnp.sqrt(jnp.maximum(-2.0 * sigma**2 * excess, 0.0))
+                blocks.append(jnp.maximum(rng, -RESIDUAL_CLIP)[:, None])
         else:
-            pred_ranges = self.true_ranges(particles.positions)
-            z = (observation.ranges - pred_ranges) / observation.observation_sigma
-            feat = jnp.clip(z, -RESIDUAL_CLIP, RESIDUAL_CLIP)
+            resid = observation.ranges - self.true_ranges(particles.positions)  # (n, m*k)
+            if self.feature_mode in ('nats', 'both'):
+                blocks.append(jnp.clip(resid / sigma, -RESIDUAL_CLIP, RESIDUAL_CLIP))
+            if self.feature_mode in ('range', 'both'):
+                blocks.append(jnp.clip(resid, -RESIDUAL_CLIP, RESIDUAL_CLIP))
+        feat = jnp.concatenate(blocks, axis=-1)
         return jnp.where(has_obs, feat, 0.0)
 
     def state_array(self, state) -> jax.Array:
@@ -451,6 +481,7 @@ def build_pursuit_evasion_env(
     obs_interval: int = 1,
     sigma_obs_min: float = SIGMA_OBS_MIN,
     sigma_obs_max: float = SIGMA_OBS_MAX,
+    feature_mode: str = 'nats',
 ) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders,
@@ -464,4 +495,5 @@ def build_pursuit_evasion_env(
         obs_interval=obs_interval,
         sigma_obs_min=sigma_obs_min,
         sigma_obs_max=sigma_obs_max,
+        feature_mode=feature_mode,
     )
