@@ -158,7 +158,7 @@ def write_pooled(output_dir, results, names, t_min):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description='Pursuit-evasion mechanism ablation.')
-    parser.add_argument('--model_dir', type=str, required=True)
+    parser.add_argument('--model_dir', type=str, default=None, help='required for a task')
     parser.add_argument('--output_dir', type=str, required=True)
     parser.add_argument('--n', type=int, default=2048, help='particle budget of both filters')
     parser.add_argument('--sigma', type=float, default=0.02, help='pinned observation noise')
@@ -209,6 +209,8 @@ def main() -> None:
 
     if args.task_id < 0 or args.task_id >= len(tasks):
         raise SystemExit(f'--task_id in 0..{len(tasks) - 1}, or --list_tasks / --merge')
+    if args.model_dir is None:
+        raise SystemExit('--model_dir is required to run a task')
 
     with open(os.path.join(args.model_dir, 'data_config.json')) as f:
         data_cfg = build_dataclass(DataConfig, json.load(f))
