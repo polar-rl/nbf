@@ -1,6 +1,6 @@
 # nbf
 
-Neural Bayesian Filtering: amortized Bayesian filters built on learned distribution embeddings, together with the pursuit-evasion domain they were developed against.
+Neural Bayesian Filtering: Bayesian filters built on learned distribution embeddings.
 
 ## Installation
 
