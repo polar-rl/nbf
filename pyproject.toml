@@ -1,8 +1,10 @@
 [project]
 name = 'nbf'
 version = '0.0.1'
-description = 'Amortized Bayesian filtering algorithm built on learned distribution embeddings.'
+description = 'Bayesian filtering algorithm built on learned distribution embeddings.'
 readme = 'README.md'
+license = 'MIT'
+license-files = ['LICENSE.md']
 requires-python = '>=3.13,<3.14'
 dependencies = [
     'embedex>=0.0.1',
