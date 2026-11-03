@@ -6,19 +6,16 @@ from embedex.distributions.builder import create_model
 
 from nbf.domains.pursuit_evasion.eval.base import make_env_kn, override_sigma
 from nbf.domains.pursuit_evasion.policies import sample_train_component_policy
-from nbf.domains.pursuit_evasion.train import load_config
 from nbf.eval.base import rollout_episodes, split_T
 from nbf.eval.samples import nbf_crossover_stream_batch, pf_crossover_stream_batch
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.particle import ParticleFilter
 
-from .test_train import SMOKE
-
 N, T, NP, NREF = 2, 4, 16, 8
 
 
-def _setup(k):
-    cfg = load_config(SMOKE, [f'data.num_evaders={k}'])
+def _setup(domain, k):
+    cfg = domain.config([f'data.num_evaders={k}'])
     policy = sample_train_component_policy(jax.random.PRNGKey(3), 'random_walk')
     env = make_env_kn(k, T, (policy,) * k, sigma_obs_min=0.01, sigma_obs_max=0.05)
     cfg.model.input_dim = 2 * k
@@ -35,8 +32,8 @@ def _keys(seed):
 
 
 @pytest.mark.parametrize('k', [1, 2])
-def test_crossover_streams(k):
-    env, model, episodes = _setup(k)
+def test_crossover_streams(k, domains):
+    env, model, episodes = _setup(domains['pursuit_evasion'], k)
     nbf = NeuralBayesianFilter(model, num_particles=NP)
     pf = ParticleFilter(num_particles=NP)
 

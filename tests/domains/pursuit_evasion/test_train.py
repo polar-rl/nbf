@@ -1,7 +1,5 @@
 """Pursuit-evasion on-policy trainer: per-episode policies, rollout layout, one train step."""
 
-import os
-
 import jax
 import jax.numpy as jnp
 import pytest
@@ -9,29 +7,16 @@ from embedex.distributions.builder import create_model
 from embedex.distributions.training import init_optimizer
 
 from nbf.domains.pursuit_evasion.train import (
-    build_env,
     env_with_policies,
-    load_config,
     sample_policy_batch,
     simulate_episodes,
 )
 from nbf.train import collect_rollout, gold_loss, train_step
 
-SMOKE = os.path.join(
-    os.path.dirname(__file__),
-    '..',
-    '..',
-    'nbf',
-    'domains',
-    'pursuit_evasion',
-    'configs',
-    'smoke_k1.yaml',
-)
 
-
-def _setup(k: int):
-    cfg = load_config(SMOKE, [f'data.num_evaders={k}', 'training.episodes_per_rollout=4'])
-    env = build_env(cfg.data)
+def _setup(domain, k: int):
+    cfg = domain.config([f'data.num_evaders={k}', 'training.episodes_per_rollout=4'])
+    env = domain.build_env(cfg.data)
     cfg.model.input_dim = 2 * k
     cfg.model.likelihood_dim = env.likelihood_feature_dim
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
@@ -39,13 +24,13 @@ def _setup(k: int):
 
 
 @pytest.fixture(scope='module')
-def setup_k1():
-    return _setup(1)
+def setup_k1(domains):
+    return _setup(domains['pursuit_evasion'], 1)
 
 
 @pytest.fixture(scope='module')
-def setup_k2():
-    return _setup(2)
+def setup_k2(domains):
+    return _setup(domains['pursuit_evasion'], 2)
 
 
 def test_policy_batch_is_stacked_per_evader():

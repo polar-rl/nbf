@@ -20,11 +20,6 @@ def _identity_propagate(position, policy, obstacles):
     return position
 
 
-@pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
-
-
 def _make_gmf(M: int):
     n = 2  # num_evaders=1 → state dim 2
     return GMF(

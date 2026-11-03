@@ -1,39 +1,25 @@
 """The NBF step is generate + ParticleSet.simulate + likelihood features, and the filter's
 public call surface (positional constructor, update/step/sample) holds."""
 
-import os
-
 import jax
 import jax.numpy as jnp
 import pytest
 from embedex.distributions.builder import create_model
 
-from nbf.domains.lorenz96.env import build_lorenz96_env
-from nbf.domains.lorenz96.train import load_config, simulate_episodes
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.filters.particle import ParticleSet
 
-SMOKE = os.path.join(
-    os.path.dirname(__file__),
-    '..',
-    '..',
-    'nbf',
-    'domains',
-    'lorenz96',
-    'configs',
-    'smoke_l96.yaml',
-)
-
 
 @pytest.fixture(scope='module')
-def setup():
-    cfg = load_config(SMOKE, ['training.rollout_num_particles=32'])
+def setup(domains):
+    lorenz96 = domains['lorenz96']
+    cfg = lorenz96.config(['training.rollout_num_particles=32'])
     cfg.data.norm_mean, cfg.data.norm_std = 2.5, 3.9
-    env = build_lorenz96_env(cfg.data)
+    env = lorenz96.build_env(cfg.data)
     cfg.model.input_dim = cfg.data.K
     cfg.model.likelihood_dim = env.likelihood_feature_dim
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
-    eps = simulate_episodes(env, 1, jax.random.PRNGKey(1))
+    eps = lorenz96.module.simulate_episodes(env, 1, jax.random.PRNGKey(1))
     one = lambda t: jax.tree.map(lambda x: x[0], t)  # noqa: E731
     st, op, on = (
         jax.tree.map(lambda x: x[0, 0], t) for t in (eps.states_next, eps.obs_prev, eps.obs_next)

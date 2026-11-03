@@ -11,11 +11,6 @@ N = 512
 
 
 @pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
-
-
-@pytest.fixture
 def env():
     return Lorenz96Env(
         K=K,

@@ -20,11 +20,6 @@ from nbf.domains.pursuit_evasion.policies import make_random_walk_policy
 from nbf.filters.enkf import EnsembleKalmanFilter, LocalEnsembleTransformKalmanFilter
 
 
-@pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
-
-
 def _pe_env(k: int, shuffle: bool = True, time_limit: int = 5) -> PursuitEvasionEnv:
     return PursuitEvasionEnv(
         num_evaders=k,

@@ -20,11 +20,6 @@ OBS_IDX = np.arange(1, K, 2)
 
 
 @pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
-
-
-@pytest.fixture
 def env():
     return Lorenz96Env(
         K=K,
@@ -95,7 +90,10 @@ FILTERS = {
 
 
 class TestLinearModeKalman:
-    @pytest.mark.parametrize('name', list(FILTERS))
+    # The LETKF eigendecomposes its 4096-member ensemble at every site and step.
+    @pytest.mark.parametrize(
+        'name', [pytest.param(n, marks=pytest.mark.slow) if n == 'letkf' else n for n in FILTERS]
+    )
     def test_matches_exact_kalman(self, env, key, name):
         reset_key, filt_key = jax.random.split(key)
         state, ts = env.reset(reset_key)

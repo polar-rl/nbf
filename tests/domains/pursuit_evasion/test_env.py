@@ -1,7 +1,6 @@
 import jax
 import jax.numpy as jnp
 import pytest
-from jumanji.types import StepType
 
 from nbf.domains.pursuit_evasion.env import (
     DEFAULT_OBSTACLES,
@@ -17,11 +16,6 @@ from nbf.domains.pursuit_evasion.env import (
     transition_single,
 )
 from nbf.domains.pursuit_evasion.policies import make_goal_policy, make_random_walk_policy
-
-
-@pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
 
 
 @pytest.fixture
@@ -114,11 +108,10 @@ class TestGenerator:
 
 
 class TestEnvReset:
-    def test_initial_obs_is_sentinel(self, env, key):
+    def test_reset_observes_every_range_as_the_sentinel(self, env, key):
         _, ts = env.reset(key)
         assert ts.observation.ranges.shape == (env.num_evaders,)
         assert jnp.all(ts.observation.ranges == -1.0)
-        assert ts.step_type == StepType.FIRST
 
 
 class TestEnvStep:
@@ -127,11 +120,8 @@ class TestEnvStep:
         env_p = PursuitEvasionEnv(num_evaders=1, time_limit=5, policy=policy)
         start = jnp.array([[1.0, 1.0]])
         state = PursuitEvasionState(positions=start, step_count=0, terminal=False)
-        deltas = []
-        for sub in jax.random.split(key, 64):
-            ns, _ = env_p.step(state, 0, sub)
-            deltas.append(float(jnp.linalg.norm(ns.positions - start)))
-        mean_step = sum(deltas) / len(deltas)
+        ns, _ = jax.vmap(lambda k: env_p.step(state, 0, k))(jax.random.split(key, 64))
+        mean_step = float(jnp.mean(jnp.linalg.norm(ns.positions[:, 0] - start[0], axis=-1)))
         assert SPEED * 0.5 < mean_step < SPEED * 2.0
 
     def test_step_observation_close_to_true_range(self, key):
@@ -142,28 +132,8 @@ class TestEnvStep:
         true_r = float(jnp.linalg.norm(ns.positions[0] - SENSOR_POS))
         assert abs(float(ts.observation.ranges[0]) - true_r) < 5.0 * SIGMA_OBS_MAX
 
-    def test_terminates_at_time_limit(self, key):
-        policy = make_random_walk_policy()
-        env_p = PursuitEvasionEnv(num_evaders=1, time_limit=3, policy=policy)
-        state, _ = env_p.reset(key)
-        ts = None
-        for sub in jax.random.split(key, env_p.time_limit):
-            state, ts = env_p.step(state, 0, sub)
-        assert int(state.step_count) == env_p.time_limit
-        assert bool(state.terminal) is True
-        assert ts.step_type == StepType.LAST
-
 
 class TestObservationWeights:
-    def test_uniform_when_no_observation(self, env, key):
-        n = 16
-        keys = jax.random.split(key, n)
-        states, timesteps = jax.vmap(env.reset)(keys)
-        gold = jax.tree.map(lambda x: x[0], timesteps.observation)
-        w, _ = env.observation_weights(states, timesteps.observation, gold)
-        assert w.shape == (n,)
-        assert jnp.allclose(w, jnp.ones(n) / n)
-
     def test_softmax_when_observation_present(self, key):
         policy = make_random_walk_policy()
         env_p = PursuitEvasionEnv(num_evaders=1, time_limit=5, policy=policy)
@@ -200,13 +170,15 @@ class TestMultiEvader:
         )
         positions = jnp.array([[5.0, 5.0], [5.2, 5.0]])
         state = PursuitEvasionState(positions=positions, step_count=0, terminal=False)
-        d_no, d_yes = [], []
-        for sub in jax.random.split(key, 64):
-            ns_no, _ = env_no.step(state, 0, sub)
-            ns_yes, _ = env_yes.step(state, 0, sub)
-            d_no.append(float(jnp.linalg.norm(ns_no.positions[0] - ns_no.positions[1])))
-            d_yes.append(float(jnp.linalg.norm(ns_yes.positions[0] - ns_yes.positions[1])))
-        assert sum(d_yes) / len(d_yes) > sum(d_no) / len(d_no) + 0.05
+        keys = jax.random.split(key, 64)
+
+        def mean_distance(env):
+            ns, _ = jax.vmap(lambda k: env.step(state, 0, k))(keys)
+            return float(
+                jnp.mean(jnp.linalg.norm(ns.positions[:, 0] - ns.positions[:, 1], axis=-1))
+            )
+
+        assert mean_distance(env_yes) > mean_distance(env_no) + 0.05
 
     def test_shuffled_obs_ranges_match_set(self, key):
         pols = (make_random_walk_policy(),) * 3

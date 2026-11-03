@@ -1,4 +1,4 @@
-import os
+import json
 
 import equinox as eqx
 import jax
@@ -8,8 +8,7 @@ import pytest
 from embedex.distributions.builder import create_model
 from embedex.distributions.training import init_optimizer
 
-from nbf.domains.lorenz96.env import build_lorenz96_env
-from nbf.domains.lorenz96.train import load_config, simulate_episodes
+from nbf.domains.lorenz96.train import simulate_episodes
 from nbf.filters.nbf import NeuralBayesianFilter
 from nbf.train import (
     collect_rollout,
@@ -21,25 +20,13 @@ from nbf.train import (
     validate,
 )
 
-SMOKE = os.path.join(
-    os.path.dirname(__file__),
-    '..',
-    '..',
-    'nbf',
-    'domains',
-    'lorenz96',
-    'configs',
-    'smoke_l96.yaml',
-)
-
 
 @pytest.fixture(scope='module')
-def setup():
-    cfg = load_config(
-        SMOKE, ['training.rollout_num_particles=32', 'training.episodes_per_rollout=4']
-    )
+def setup(domains):
+    lorenz96 = domains['lorenz96']
+    cfg = lorenz96.config(['training.rollout_num_particles=32', 'training.episodes_per_rollout=4'])
     cfg.data.norm_mean, cfg.data.norm_std = 2.5, 3.9
-    env = build_lorenz96_env(cfg.data)
+    env = lorenz96.build_env(cfg.data)
     cfg.model.input_dim = cfg.data.K
     cfg.model.likelihood_dim = env.likelihood_feature_dim
     model = create_model(cfg.model, dequantize=False, key=jax.random.PRNGKey(0))
@@ -177,3 +164,21 @@ def test_validate_reports_posterior_and_forecast_rmse(setup):
     assert {'gold_loss', 'post_rmse', 'forecast_rmse', 'neff_over_n', 'resample_frac'} <= set(v)
     assert all(np.isfinite(x) for x in v.values())
     assert v['post_rmse'] > 0.0 and v['forecast_rmse'] > 0.0
+
+
+@pytest.mark.slow
+def test_domain_trains_end_to_end(domain, tmp_path):
+    """Each domain's trainer runs its smoke config: rollouts, gradient steps, validation, logs
+    and checkpoints."""
+
+    cfg = domain.config([f'save_path={tmp_path}'])
+
+    domain.module.run(cfg)
+
+    with open(tmp_path / 'train_log.jsonl') as f:
+        log = [json.loads(line) for line in f]
+    assert log[-1]['step'] == cfg.training.num_iterations
+    assert all(np.isfinite(record['loss']) for record in log)
+    assert any('val' in record for record in log)
+    saved = {p.name for p in tmp_path.iterdir()}
+    assert {'model.eqx', 'model_config.json', 'data_config.json', 'train_config.json'} <= saved

@@ -2,7 +2,6 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import pytest
-from jumanji.types import StepType
 from scipy.integrate import solve_ivp
 
 from nbf.domains.lorenz96.env import (
@@ -16,11 +15,6 @@ from nbf.domains.lorenz96.env import (
     rw_mh_redraw,
 )
 from nbf.filters.particle import ParticleFilter, ParticleSet, RegularizedParticleFilter
-
-
-@pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
 
 
 @pytest.fixture
@@ -100,12 +94,10 @@ class TestStateObservation:
         assert np.allclose(obs.values, state.x[1::2])
         assert float(obs.sigma_obs) == pytest.approx(float(state.sigma_obs))
 
-    def test_reset_obs_is_sentinel(self, env, key):
-        state, ts = env.reset(key)
+    def test_reset_observes_every_site_as_the_sentinel(self, env, key):
+        _, ts = env.reset(key)
         assert ts.observation.values.shape == (4,)
         assert np.all(np.asarray(ts.observation.values) == OBS_SENTINEL)
-        assert not bool(env.observation_present(ts.observation))
-        assert ts.step_type == StepType.FIRST
 
 
 class TestGenerator:
@@ -125,15 +117,6 @@ class TestGenerator:
 
 
 class TestEnvStep:
-    def test_step_counts_and_termination(self, env, key):
-        state, _ = env.reset(key)
-        ts = None
-        for sub in jax.random.split(key, env.time_limit):
-            state, ts = env.step(state, 0, sub)
-        assert int(state.step_count) == env.time_limit
-        assert bool(state.terminal)
-        assert ts.step_type == StepType.LAST
-
     def test_step_observation_close_to_true_state(self, env, key):
         state, _ = env.reset(key)
         next_state, ts = env.step(state, 0, key)
@@ -153,12 +136,6 @@ class TestEnvStep:
 
 
 class TestObservationWeights:
-    def test_uniform_when_sentinel(self, env, key):
-        state, ts = env.reset(key)
-        particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 16))
-        w, _ = env.observation_weights(particles, None, ts.observation)
-        assert np.allclose(w, np.ones(16) / 16)
-
     def test_nonfinite_particle_gets_zero_weight(self, env, key):
         state, _ = env.reset(key)
         particles = jax.vmap(lambda k: env.sample_prior(state, k))(jax.random.split(key, 16))

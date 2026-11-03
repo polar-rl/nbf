@@ -13,11 +13,6 @@ import pytest
 from nbf.filters.particle import ParticleSet
 
 
-@pytest.fixture
-def key():
-    return jax.random.PRNGKey(0)
-
-
 def _make(weights):
     """Build a ParticleSet with arbitrary jax-array particles matching the weight count."""
     weights = jnp.asarray(weights)

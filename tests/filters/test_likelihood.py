@@ -84,7 +84,8 @@ class TestScalarFeature:
         f = np.asarray(log_weight_features(w))
         assert f.shape == (16, 1)
         assert np.max(f) == 0.0 and np.min(f) >= LOG_FEATURE_FLOOR
-        raw = np.log(np.maximum(np.asarray(w) / np.max(np.asarray(w)), 1e-300))
+        w64 = np.asarray(w, dtype=np.float64)
+        raw = np.log(np.maximum(w64 / w64.max(), 1e-300))
         assert np.allclose(f[:, 0], np.maximum(raw, LOG_FEATURE_FLOOR), atol=1e-4)
 
     def test_no_state_observation_means_uniform_weights(self):
