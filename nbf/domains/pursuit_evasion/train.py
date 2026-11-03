@@ -14,10 +14,11 @@ from dataclasses import asdict, dataclass, field
 
 import jax
 import jax.numpy as jnp
+from embedex.config import apply_overrides
+from embedex.config import load_config as _load_config
 from embedex.distributions.config import ModelConfig
 from jax import Array
 
-from nbf.config import apply_overrides, build_dataclass
 from nbf.domains.pursuit_evasion.config import DataConfig
 from nbf.domains.pursuit_evasion.env import (
     L,
@@ -48,14 +49,7 @@ def _src_root() -> str:
 
 
 def load_config(path: str | None, overrides: list[str]) -> Config:
-    if path is None:
-        cfg = Config()
-    else:
-        import yaml
-
-        with open(path) as f:
-            raw = yaml.safe_load(f) or {}
-        cfg = build_dataclass(Config, raw)
+    cfg = Config() if path is None else _load_config(Config, path)
     if overrides:
         cfg = apply_overrides(cfg, overrides)
     if not os.path.isabs(cfg.save_path):

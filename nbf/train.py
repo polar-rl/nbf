@@ -29,10 +29,10 @@ import jax.numpy as jnp
 import numpy as np
 from embedex.distributions.builder import create_model
 from embedex.distributions.config import ModelConfig
+from embedex.distributions.config import TrainingConfig as _BaseTrainingConfig
 from embedex.distributions.training import init_optimizer
 from jax import Array
 
-from nbf.config import TrainingConfig as _BaseTrainingConfig
 from nbf.eval.base import cast_velocity_net_bf16
 from nbf.filters.nbf import NeuralBayesianFilter
 

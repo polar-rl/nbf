@@ -4,8 +4,8 @@ import json
 import os
 
 import jax
+from embedex.config import build_dataclass
 
-from nbf.config import build_dataclass
 from nbf.domains.lorenz96.config import DataConfig
 from nbf.domains.lorenz96.env import Lorenz96Env
 from nbf.domains.lorenz96.eval_utils import (

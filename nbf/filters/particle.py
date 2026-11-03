@@ -1,7 +1,6 @@
 import equinox as eqx
 import jax
 import jax.numpy as jnp
-import numpy as np
 from jumanji.env import Environment
 
 from nbf.base_types import Observation, State

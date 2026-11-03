@@ -5,8 +5,8 @@ import zlib
 
 import jax
 import numpy as np
+from embedex.config import build_dataclass
 
-from nbf.config import build_dataclass
 from nbf.domains.pursuit_evasion.config import DataConfig
 from nbf.domains.pursuit_evasion.eval.base import make_env_kn, override_sigma
 from nbf.domains.pursuit_evasion.policies import (

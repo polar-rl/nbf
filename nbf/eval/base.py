@@ -5,12 +5,11 @@ import equinox as eqx
 import jax
 import jax.numpy as jnp
 import numpy as np
+from embedex.config import build_dataclass
 from embedex.distributions.builder import create_model
 from embedex.distributions.config import ModelConfig
 from jax import Array
 from tqdm import tqdm
-
-from nbf.config import build_dataclass
 
 
 def batch_size(tree) -> int:
@@ -92,9 +91,7 @@ def load_embedding_model(model_dir, key, fm_num_steps: int | None = None):
 
 def cast_velocity_net_bf16(model):
     vnet = model.generator.velocity_net
-    vnet16 = jax.tree.map(
-        lambda x: x.astype(jnp.bfloat16) if eqx.is_inexact_array(x) else x, vnet
-    )
+    vnet16 = jax.tree.map(lambda x: x.astype(jnp.bfloat16) if eqx.is_inexact_array(x) else x, vnet)
     return eqx.tree_at(lambda m: m.generator.velocity_net, model, vnet16)
 
 

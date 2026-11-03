@@ -21,8 +21,8 @@ import os
 import zlib
 
 import jax
+from embedex.config import build_dataclass
 
-from nbf.config import build_dataclass
 from nbf.domains.pursuit_evasion.config import DataConfig
 from nbf.domains.pursuit_evasion.eval.base import make_env_kn, override_sigma
 from nbf.domains.pursuit_evasion.eval.dispatch import (
