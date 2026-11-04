@@ -1,7 +1,7 @@
 """Tests for ``nbf.filters.kalman.UKF``.
 
-UKF is now domain-agnostic — we test it with a synthetic identity dynamics and a
-range-only observation from a fixed sensor. No PE coupling.
+UKF is domain-agnostic, so the tests use synthetic identity dynamics and a range-only
+observation from a fixed sensor.
 """
 
 import equinox as eqx

@@ -1,6 +1,6 @@
 """Tests for ``nbf.filters.gmf.GMF``.
 
-GMF is now domain-agnostic — we construct with synthetic dynamics + sensor.
+GMF is domain-agnostic, so the tests construct it with synthetic dynamics and a sensor.
 """
 
 import equinox as eqx

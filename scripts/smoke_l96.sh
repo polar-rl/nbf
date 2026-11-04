@@ -20,7 +20,7 @@ OUT_DIR="results/lorenz96/smoke/eval"
 
 export NBF_NUM_REF_SAMPLES=64
 
-echo "=== [1/2] Train (on-policy, no corpus) ==="
+echo "=== [1/2] Train (on-policy) ==="
 $PY -m nbf.domains.lorenz96.train --config "$CONFIG" --set "save_path=$MODEL_DIR/"
 
 test -f "$MODEL_DIR/model.eqx" || { echo "FAIL: missing $MODEL_DIR/model.eqx"; exit 1; }
@@ -34,7 +34,7 @@ $PY -m nbf.domains.lorenz96.run_grid l2 \
     --num_episodes 4 \
     --episode_length 5 \
     --seeds 0 \
-    --methods nbf_64,nbf_op_64,pf_256,pf_reg_256,enkf_20
+    --methods nbf_64,pf_256,pf_reg_256,enkf_20
 
 test -f "$OUT_DIR/l2.npz" || { echo "FAIL: missing $OUT_DIR/l2.npz"; exit 1; }
 test -f "$OUT_DIR/l2_summary.md" || { echo "FAIL: missing $OUT_DIR/l2_summary.md"; exit 1; }

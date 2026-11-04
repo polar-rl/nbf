@@ -1,9 +1,8 @@
 """On-policy training of an NBF embedding, shared by every domain.
 
-No stored particle corpus and no reference filter. Episodes (true states and
-observations) are simulated on the fly, and the particle sets the encoder sees are
-produced along each episode by the NBF filter itself, rolled out with the current
-parameters. A set is the forecast particles together with their likelihood features
+Episodes (true states and observations) are simulated on the fly, and the particle sets
+the encoder sees are produced along each episode by the NBF filter itself, rolled out with
+the current parameters. A set is the forecast particles together with their likelihood features
 (`nbf.filters.likelihood`), uniformly weighted. The loss at every step is the generator objective (conditional
 flow matching for the FM generator, the exact NLL for a normalizing flow or
 autoregressive generator) evaluated at the single true state under the embedding of that
@@ -355,8 +354,8 @@ def run(cfg, *, env, simulate_episodes, rmse_scale: float = 1.0) -> None:
             json.dump(asdict(obj), f, indent=2)
 
     if tcfg.warmup_steps >= tcfg.num_iterations:
-        # An ITERS override on a smoke run would otherwise hand optax a negative cosine
-        # decay; a short run gets a proportionally short warmup instead.
+        # A short `training.num_iterations` override would otherwise hand optax a negative
+        # cosine decay; a short run gets a proportionally short warmup instead.
         clamped = max(1, tcfg.num_iterations // 10)
         print(f'[warmup] warmup_steps {tcfg.warmup_steps} >= num_iterations, using {clamped}')
         tcfg.warmup_steps = clamped

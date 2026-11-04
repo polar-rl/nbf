@@ -395,7 +395,7 @@ class PursuitEvasionEnv(eqx.Module):
 
         `feature_mode` picks the units. 'nats': standardized residuals clipped at
         RESIDUAL_CLIP sigma (labelled) or the shifted log-likelihood floored at
-        LOG_FEATURE_FLOOR nats (shuffled), the NeurIPS/retired features. 'range': the same
+        LOG_FEATURE_FLOOR nats (shuffled). 'range': the same
         quantities in range units, residual r_obs - r_pred (labelled) or minus the root of
         the excess squared range residual over the best particle (shuffled), clipped at
         RESIDUAL_CLIP range units, so at small sigma the encoder still sees the graded

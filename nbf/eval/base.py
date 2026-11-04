@@ -132,8 +132,7 @@ def run_chunked(fn, n: int, chunk_size: int, *, desc: str | None = None):
 
     Each chunk is pulled to host memory as it completes, so peak device memory
     scales with ``chunk_size`` rather than ``n``. A single chunk is passed straight
-    through untouched (device arrays, no host copy), which keeps the unchunked path
-    exactly as it was. ``fn`` may return any pytree of arrays.
+    through untouched (device arrays, no host copy). ``fn`` may return any pytree of arrays.
     """
     bounds = chunk_bounds(n, chunk_size)
     if len(bounds) == 1:

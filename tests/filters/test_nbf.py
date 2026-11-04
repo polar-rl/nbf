@@ -36,8 +36,7 @@ def _tree_equal(a, b) -> bool:
 
 def _tree_close(a, b, atol=1e-5) -> bool:
     # step() runs under filter_jit and an eager reference does not fuse the same way,
-    # so exact equality is only expected between two jitted paths (see
-    # scripts/check_filter_bitwise.py for the cross-commit bitwise guard).
+    # so exact equality is only expected between two jitted paths.
     return all(
         bool(jnp.allclose(x, y, atol=atol, rtol=1e-5))
         for x, y in zip(jax.tree.leaves(a), jax.tree.leaves(b), strict=True)

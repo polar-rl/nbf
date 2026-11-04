@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Pursuit-evasion smoke / integration test (the PE regression gate).
+# Pursuit-evasion smoke / integration test.
 #
 # Trains a tiny k=1 NBF on-policy (episodes simulated on the fly under training-mixture
-# policies, no PF corpus), then runs the reference-free PE grid on one cell with a tiny
+# policies), then runs the reference-free PE grid on one cell with a tiny
 # method set. A few CPU minutes; not a correctness test.
 set -euo pipefail
 
@@ -18,7 +18,7 @@ OUT_DIR="results/pursuit_evasion/smoke/eval"
 
 export NBF_NUM_REF_SAMPLES=64
 
-echo "=== [1/2] Train (on-policy, no corpus) ==="
+echo "=== [1/2] Train (on-policy) ==="
 $PY -m nbf.domains.pursuit_evasion.train --config "$CONFIG" --set "save_path=$MODEL_DIR/"
 
 for f in model.eqx model_config.json data_config.json train_config.json train_log.jsonl; do

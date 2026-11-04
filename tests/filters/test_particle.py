@@ -2,8 +2,8 @@
 
 Scope is deliberately narrow: ``neff`` and ``systematic_resample`` are pure functions
 of weights (plus a key) and don't need an env. The env-coupled methods
-(``simulate``, ``ParticleFilter.update`` / ``reset``) are covered indirectly by the
-PE integration test and aren't re-tested here.
+(``simulate``, ``ParticleFilter.update`` / ``reset``) are covered by ``test_nbf.py`` and
+``test_resample_move.py``.
 """
 
 import jax

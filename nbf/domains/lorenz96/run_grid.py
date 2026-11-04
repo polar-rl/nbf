@@ -42,8 +42,7 @@ def _sigma_tag(sigma: float) -> str:
     return 'sig' + f'{sigma:g}'.replace('.', 'p')
 
 
-# (subcell, forcing bands, (sigma_obs_min, sigma_obs_max)). Cells sort l1 < l2 < sigma,
-# so the array-task indices of l1/l2 are unchanged by the sigma cell.
+# (subcell, forcing bands, (sigma_obs_min, sigma_obs_max)).
 CELLS = {
     'l1': [
         ('f6', ((6.0, 6.0),), EVAL_SIGMA_OBS),
@@ -96,8 +95,7 @@ def run_subcell(
 ):
     env = make_cell_env(data_cfg, f_bands, sigma_obs, args.episode_length)
     key = jax.random.PRNGKey(seed)
-    # Four-way split kept so episode and method keys match grids run before the
-    # oracle and the negatives were removed.
+    # The four-way split fixes the episode keys; changing it changes the results.
     rollout_key, _, _, _ = jax.random.split(key, 4)
     state0_b, obs0_b, states_next_b, obs_prev_b, obs_next_b = rollout_episodes(
         env, args.episode_length, args.num_episodes, rollout_key

@@ -5,7 +5,7 @@ Every environment defines `likelihood_feature_dim` and
 `likelihood_features(particles, observation, weights)`. For a likelihood that factors over
 sites, Y(y | x) = prod_k Y_k(y | x), the features are a sufficient statistic of every factor
 (Lorenz-96's per-site residuals, pursuit-evasion's per-sensor ones). A domain whose
-observation model does not factor (the pomdax domains) hands back `log_weight_features` of
+observation model does not factor hands back `log_weight_features` of
 the set's accumulated weights, the scalar case of the same construction.
 """
 
