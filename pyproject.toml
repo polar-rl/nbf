@@ -43,7 +43,10 @@ environments = [
 ]
 
 [tool.uv.sources]
-embedex = { path = '../embedex', editable = true }
+embedex = { git = 'https://github.com/polar-rl/embedex.git', tag = '2510.03614v2' }
+# To develop against a local clone of `embedex`, use this source instead of the one above. The
+# `no-local-sources` pre-commit hook stops pyproject.toml or uv.lock being committed with it.
+# embedex = { path = '../embedex', editable = true }
 
 [tool.pytest.ini_options]
 testpaths = ['tests']

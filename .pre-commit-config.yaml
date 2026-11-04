@@ -14,3 +14,13 @@ repos:
       - id: trailing-whitespace
       - id: mixed-line-ending
       - id: end-of-file-fixer
+
+  - repo: local
+    hooks:
+      # Developers may point a uv source at a local clone (see pyproject.toml), but such
+      # a source should not reach the repository as it would not exist for anyone else.
+      - id: no-local-sources
+        name: no local package sources
+        language: pygrep
+        entry: '^[^#\n]*\b(path|editable|directory)\s*=\s*["''](?!\.["''])'
+        files: ^(pyproject\.toml|uv\.lock)$
